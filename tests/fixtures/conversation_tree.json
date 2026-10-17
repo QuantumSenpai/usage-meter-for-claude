@@ -1,0 +1,97 @@
+{
+  "uuid": "11111111-2222-3333-4444-555555555555",
+  "name": "Fixture Conversation with Branches and Attachments",
+  "created_at": "2026-10-17T12:00:00.000Z",
+  "updated_at": "2026-10-17T12:05:00.000Z",
+  "current_leaf_message_uuid": "msg-leaf-4b",
+  "chat_messages": [
+    {
+      "uuid": "msg-1",
+      "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+      "sender": "human",
+      "created_at": "2026-10-17T12:01:00.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello Claude, please summarize the quarterly report."
+        }
+      ],
+      "attachments": []
+    },
+    {
+      "uuid": "msg-2",
+      "parent_message_uuid": "msg-1",
+      "sender": "assistant",
+      "created_at": "2026-10-17T12:01:15.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "Certainly! Please provide the quarterly report file or paste its contents."
+        }
+      ],
+      "attachments": []
+    },
+    {
+      "uuid": "msg-3a",
+      "parent_message_uuid": "msg-2",
+      "sender": "human",
+      "created_at": "2026-10-17T12:02:00.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "BRANCH A - ABANDONED: Never mind, I will paste something else."
+        }
+      ],
+      "attachments": []
+    },
+    {
+      "uuid": "msg-4a",
+      "parent_message_uuid": "msg-3a",
+      "sender": "assistant",
+      "created_at": "2026-10-17T12:02:15.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "BRANCH A ASSISTANT: Understood, standing by for your input."
+        }
+      ],
+      "attachments": []
+    },
+    {
+      "uuid": "msg-3b",
+      "parent_message_uuid": "msg-2",
+      "sender": "human",
+      "created_at": "2026-10-17T12:03:00.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "Here is the attached report data."
+        }
+      ],
+      "attachments": [
+        {
+          "extracted_content": "REPORT_EXTRACTED_CONTENT: Revenue increased by 25% year over year with positive EBITDA."
+        }
+      ]
+    },
+    {
+      "uuid": "msg-leaf-4b",
+      "parent_message_uuid": "msg-3b",
+      "sender": "assistant",
+      "created_at": "2026-10-17T12:03:30.000Z",
+      "text": "",
+      "content": [
+        {
+          "type": "text",
+          "text": "Thank you for the data. The quarterly results show steady revenue growth and strong operational efficiency."
+        }
+      ],
+      "attachments": []
+    }
+  ]
+}

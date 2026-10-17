@@ -193,6 +193,16 @@
 	}
 
 	async function computeConversationMetrics(conversation) {
+		if (!conversation || typeof conversation !== 'object' || !Array.isArray(conversation.chat_messages)) {
+			return {
+				trunkMessageCount: 0,
+				totalTokens: null,
+				lastAssistantMs: null,
+				cachedUntil: null,
+				isLoaded: false
+			};
+		}
+
 		const trunk = buildTrunk(conversation);
 		const trunkIds = trunk.map((m) => m.uuid).filter(Boolean);
 		tokenCache.pruneToMessageIds(trunkIds);
@@ -220,15 +230,75 @@
 			totalTokens += msgTokens;
 		}
 
-		const cachedUntil = lastAssistantMs ? lastAssistantMs + CC.CONST.CACHE_WINDOW_MS : null;
+		const cacheWindow = CC.CONST?.CACHE_WINDOW_MS || (5 * 60 * 1000);
+		const cachedUntil = lastAssistantMs ? lastAssistantMs + cacheWindow : null;
 
 		return {
 			trunkMessageCount: trunk.length,
 			totalTokens,
 			lastAssistantMs,
-			cachedUntil
+			cachedUntil,
+			isLoaded: true
 		};
 	}
 
-	CC.tokens = { computeConversationMetrics, countTokens };
+	function formatTokens(tokens) {
+		if (typeof tokens !== 'number' || isNaN(tokens) || tokens < 0) return '—';
+		if (tokens >= 1000) {
+			return `~${Math.round(tokens / 1000)}k`;
+		}
+		return `~${tokens}`;
+	}
+
+	function formatContextUtilization(tokens, limit = (CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000)) {
+		if (typeof tokens !== 'number' || isNaN(tokens) || tokens < 0) {
+			return {
+				formatted: '— / 200k',
+				percentText: '—',
+				barPercent: 0,
+				isOverLimit: false
+			};
+		}
+
+		const formattedTokens = formatTokens(tokens);
+		const formatted = `${formattedTokens} / 200k`;
+
+		if (tokens > limit) {
+			return {
+				formatted,
+				percentText: '>100%',
+				barPercent: 100,
+				isOverLimit: true
+			};
+		}
+
+		const rawPct = (tokens / limit) * 100;
+		const barPercent = Math.max(0, Math.min(100, rawPct));
+		const percentText = tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`;
+
+		return {
+			formatted,
+			percentText,
+			barPercent,
+			isOverLimit: false
+		};
+	}
+
+	const exp = {
+		ROOT_MESSAGE_ID,
+		countTokens,
+		buildTrunk,
+		isCountableContentItem,
+		stringifyCountableContentItem,
+		stringifyMessageCountables,
+		computeConversationMetrics,
+		formatTokens,
+		formatContextUtilization
+	};
+
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = exp;
+	}
+
+	CC.tokens = exp;
 })();

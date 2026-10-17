@@ -72,14 +72,47 @@
 
 ## 2. Ranked Root Causes: What Broke and Why
 
+### Rank 0: Context Row Showing "~0 / 200k" Bug (Resolved in v0.5.2)
+- **Severity: Critical (Direct Cause of Incorrect Token Display)**
+- **Live Evidence (from Brave debug log):**
+  - Sequence: `[fetch_conversation_start] -> [conversation_metrics_computed {tokens: 0}] -> [conversation_metrics_computed {tokens: 231255}]`.
+  - The first `tokens: 0` event was computed *before* conversation data arrived.
+  - Token counting logic itself works accurately (`231255` tokens computed on a multi-message conversation).
+  - Confirmed real conversation shape:
+    - `chat_messages[].text` is `""` (empty string).
+    - Real text resides in `chat_messages[].content[].text`.
+    - Attachments reside in `chat_messages[].attachments[].extracted_content`.
+    - Root message parent ID is `00000000-0000-4000-8000-000000000000`.
+    - Active leaf is `conversation.current_leaf_message_uuid`.
+- **Root Cause Breakdown (with File & Line Citations):**
+  1. **Indiscriminate Shallow Interception (`src/injected/bridge.js:137-142`):**
+     - `bridge.js` intercepted any URL matching `url.includes('/chat_conversations/')` without requiring HTTP method `GET` and without verifying whether the request was an actual message tree request (`tree=true`).
+     - On page load / chat open, Claude makes preliminary shallow metadata calls or settings updates with `chat_messages: []` or missing `chat_messages`.
+     - `bridge.js` cloned and forwarded this shallow response to `cc:conversation`.
+  2. **Empty Message Array Yields 0 Tokens (`src/content/tokens.js:51-52`):**
+     - `buildTrunk(conversation)` sees `messages.length === 0` and returns `[]`.
+     - `computeConversationMetrics` calculates `totalTokens = 0`.
+  3. **Direct Emission & Overwrite (`src/content/main.js:301-303`):**
+     - `CC.bridge.on('cc:conversation')` received this shallow response, logged `conversation_metrics_computed { tokens: 0 }`, and called `ui.setConversationMetrics({ totalTokens: 0 })`.
+     - Any subsequent shallow PATCH/GET also actively overwrote real token counts back to 0.
+  4. **False Zero Rendered as Real Number & Missing Loading State (`src/content/ui.js:583, 718-719, 1182-1206`):**
+     - Initial state and HTML template hardcoded `~0 / 200k` and `0%` instead of a loading state (`— / 200k`, `—`).
+     - `setConversationMetrics` defaulted `tokens = typeof totalTokens === 'number' ? totalTokens : 0` and rendered `~0 / 200k` and `0%` whenever called before data arrived.
+  5. **Panel Mount Race Condition (`src/content/ui.js:847, 1182-1206`):**
+     - If `setConversationMetrics` was called before `ui.initialize()` created DOM elements, `this.dom.ctxMain` was undefined, so visual elements were not updated, and `initialize()` never rendered cached state into the new DOM.
+  6. **Missing Refresh Triggers (`src/content/main.js:251-259, 266-273`):**
+     - `refreshConversation()` was never invoked on `cc:stream_completed` (when assistant finished streaming) or when `orgId` was resolved by `cc:detected_org`.
+- **Resolution Implemented:**
+  - `src/injected/bridge.js`: Restricts conversation interception to `method === 'GET'`, requires `Array.isArray(data.chat_messages)`, and ignores empty messages unless `tree=` or leaf UUID is present.
+  - `src/content/tokens.js`: Distinguishes loading (`isLoaded: false`, `totalTokens: null`) from real empty chat (`isLoaded: true`, `totalTokens: 0`). Added `formatTokens` and `formatContextUtilization`.
+  - `src/content/ui.js`: Displays `"— / 200k"` and `"—"` until loaded; caps over-limit counts (>200k) at 100% width, displays `~231k / 200k` and `>100%`, and switches bar to warning color. Added `renderAll()` to `initialize()`.
+  - `src/content/main.js`: Added loading state resets on chat navigation, shallow payload guard, and refreshed conversation on stream completion.
+
 ### Rank 1: DOM Anchors & Selectors Changed in Claude's Redesigned UI
-- **Severity: High (Direct Cause of "Shows Nothing")**
+- **Severity: High (Direct Cause of "Shows Nothing" in v0.4 era)**
 - **Mechanism:**
-  - `attachUsageLine()` relies on finding `[data-testid="model-selector-dropdown"]` and then searching upward for a flex row container with >1 buttons (`findToolbarRow`).
-  - In recent Claude UI updates, the prompt input area and toolbar were restructured (e.g. style changes, icon buttons wrapped differently, model selector moved to popovers or header, different testids).
-  - When `findToolbarRow` or `modelSelector` returns null, `attachUsageLine` silently exits without mounting anything.
-  - Furthermore, `main.js` and `ui.js` use `CC.waitForElement(..., 60000)` with a boolean lock `usageReattachPending = true` and `headerReattachPending = true`. If the selector never appears, the lock remains true for up to 60 seconds, suppressing any further attachment attempts.
-  - The top header selector `.chat-project-wrapper` is a plain CSS class that has likely been renamed or removed by Tailwind/styled-jsx updates.
+  - `attachUsageLine()` relied on finding in-page containers (`[data-testid="model-selector-dropdown"]`, toolbar row).
+  - Resolved in v0.5.1 by transitioning to an isolated, fixed, draggable ShadowRoot panel.
 
 ### Rank 2: MV3 Timing & Script Injection in Isolated World
 - **Severity: High (Causes Intermittent / Incomplete Data)**

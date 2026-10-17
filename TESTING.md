@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.1)
+# Testing Checklist: Usage Meter for Claude (v0.5.2)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -14,47 +14,69 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ## Verification Test Matrix
 
-### 1. Fixed Draggable Panel & Persistence
-- **Preconditions:** Extension loaded, on any `claude.ai` page.
+### 1. Context Row Loading State vs Real Count (v0.5.2 Bug Fix)
+- **Preconditions:** Extension loaded, in any existing chat or new chat.
 - **Steps:**
-  1. Verify the Usage Meter appears as a sleek fixed panel near the bottom-right corner.
-  2. Click and hold the header ("Usage Meter") to drag the panel to another location on the screen.
-  3. Verify the panel clamps to the viewport edges and cannot be dragged off-screen.
-  4. Refresh the page (`Cmd + R`).
+  1. Open a new chat (`/new`) or switch to an existing chat from the sidebar.
+  2. Observe the Context row immediately upon navigation before conversation data finishes fetching.
+  3. Wait for the conversation payload to arrive.
+  4. In a genuinely empty chat, observe the loaded state.
+  5. In a chat with existing messages, observe the calculated count.
 - **Expected Results:**
-  - Panel persists at the custom dragged coordinates (restored from `localStorage.cc_panel_pos`).
-  - Idempotent: exactly one panel is present; never duplicates.
+  - **Before data arrives (or on new chat before fetch):** Context row displays `— / 200k` and `—` (NOT `~0 / 200k` and NOT `0%`).
+  - **Genuinely empty chat after load:** Displays `~0 / 200k` and `0%`.
+  - **Multi-message chat after load:** Displays real number (e.g. `~14k / 200k`, `~231k / 200k`).
+  - Never flashes `~0 / 200k` before real data arrives.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 2. Compact Pill Mode (Expand / Collapse)
-- **Preconditions:** Panel mounted on screen.
+### 2. Over-Limit (>200k Tokens) Handling (v0.5.2)
+- **Preconditions:** Open a very long chat thread exceeding 200k context limit (e.g. ~231k tokens).
 - **Steps:**
-  1. Click the minimize button (`-` icon in header).
-  2. Observe the compact pill display (e.g. `⚡ 42% 5h · 18% 7d · ~14k` or `⚡ Plan: Free`).
-  3. Click anywhere on the pill to expand back into the full card.
-  4. Refresh the page to verify state persistence (`localStorage.cc_pill`).
+  1. Observe the Context row in the panel.
 - **Expected Results:**
-  - Smooth toggle between compact pill and full card view.
-  - State is remembered across tab navigation and reloads.
+  - **Capped Bar:** Progress bar width is capped at 100% (never overflows container, no NaN).
+  - **Real Value Display:** Displays the real compact number (e.g. `~231k / 200k`).
+  - **Percentage:** Displays `>100%`.
+  - **Warning Color:** Bar dynamically switches to high/warning utilization color (`#ef4444` / preset high).
+  - No layout breaks or text clipping.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 3. FREE-Plan Account Behavior (Confirmed Fact 2)
+### 3. Automatic Refresh & Lifecycle (v0.5.2)
+- **Preconditions:** In an active chat.
+- **Steps:**
+  1. Send a prompt to Claude and wait for the assistant response to complete streaming.
+  2. Switch to a different chat by clicking a conversation in the left sidebar.
+  3. Switch back to the previous chat.
+  4. Perform a hard page reload (`Cmd + Shift + R`).
+- **Expected Results:**
+  - **Completed Assistant Response:** Context tokens refresh automatically within ~1s after completion without manual reload.
+  - **Switching Chats:** Instantly shows `—` loading state, then populates with the new chat's token count.
+  - **Sidebar Navigation:** Click listener detects sidebar transitions and triggers immediate update.
+  - **Hard Reload:** Resolves `orgId` and mounts panel with accurate tokens.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 4. FREE-Plan Account Behavior (One Neutral Compact Line)
 - **Preconditions:** Logged into Claude on a Free tier account (where `/usage` returns all-null values).
 - **Steps:**
   1. Inspect the Usage Meter panel.
 - **Expected Results:**
-  - Displays a calm neutral line: *"No usage window active, or not provided for this plan"*.
-  - Displays an info icon `(i)` with explanatory tooltip.
-  - **NO red error banner and NO "Retry" button** (free plan nulls are recognized as a valid empty state, not an error).
-  - Context tokens and prompt cache countdown still work normally inside active chats.
+  - Session 5h and Weekly 7d rows are **completely replaced** by ONE compact neutral line:
+    *"Session & weekly limits not provided on this plan"*.
+  - **NO Session / Weekly 0% bars** and **NO greyed-out progress bars**.
+  - **NO red error banner and NO "Retry" button**.
+  - Context tokens and prompt cache countdown still operate normally inside active chats.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
@@ -216,3 +238,15 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
+
+---
+
+### 15. Explicitly Unverified Items (Requires Paid Account)
+> [!NOTE]
+> Per project constraints, testing cannot be performed on a live logged-in paid claude.ai session. The following remain unverified against live production accounts and rely on confirmed upstream shapes / synthetic fixtures:
+1. **Live Paid Plan `/usage` Payload Shape:**
+   - Exact key names and nesting on active paid accounts (e.g. `five_hour.utilization`, `five_hour.resets_at` vs alternative schemas).
+   - Covered via tolerant parser in `normalize.js` and verified with fixtures `paid_plan.synthetic.json` and `paid_plan_fractions.synthetic.json`.
+2. **Live SSE `message_limit` Stream Event:**
+   - Real-time window updates emitted during streaming completions on paid plans.
+   - Interception logic and normalization covered via `sse_message_limit.synthetic.json`.

@@ -2,7 +2,49 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
-## [0.5.1] - 2026-10-17
+## [0.5.2] - 2026-10-17
+
+### Context Token Counting & Loading State Fixes
+- **Root Cause Fix for "~0 / 200k" Display:**
+  - Resolved race condition where shallow `/chat_conversations/` requests (metadata GETs or PATCHes with `chat_messages: []`) were intercepted by `bridge.js` and emitted `cc:conversation` before the actual conversation tree arrived.
+  - Capped conversation interception in `bridge.js` to HTTP `GET` requests with verified `chat_messages` arrays, requiring `tree=` or leaf UUID when messages are empty.
+  - Added shallow payload guard in `main.js` preventing non-tree payloads from overwriting full conversation metrics.
+  - Fixed initial state in `ui.js`: initializes Context row with a loading state (`"— / 200k"`, percent `"—"`, bar width 0%) instead of hardcoded `~0 / 200k`.
+  - Distinguishes loading state (`isLoaded: false`, shows `"—"`) from a genuinely empty loaded conversation (`totalTokens: 0, isLoaded: true`, shows `~0 / 200k`, `0%`).
+  - Added `renderAll()` to `ui.initialize()` to ensure cached metrics are immediately rendered into freshly mounted DOM elements, eliminating panel mount race conditions.
+
+### Over-Limit (>200k Tokens) & Compact Formatting
+- **Over-Limit Handling:**
+  - In chats exceeding the 200k context limit (e.g. 231,255 tokens), bar width is strictly capped at 100% (no visual overflow or NaN).
+  - Main value displays real compact token count (e.g. `~231k / 200k`).
+  - Percentage label displays `>100%`.
+  - Bar color dynamically switches to high/warning utilization color (`#ef4444` / preset high).
+  - Numbers $\ge 1,000$ are consistently formatted with `k` notation (e.g. `~14k`, `~200k`, `~231k`).
+
+### Free Plan Compact Row
+- **Single Neutral Notice for Free Plan:**
+  - When usage state is `empty` (Free accounts returning null windows), Session 5h and Weekly 7d rows are completely hidden.
+  - Replaced with ONE compact neutral line: *"Session & weekly limits not provided on this plan"*.
+  - Completely eliminates misleading `0%` or `n/a` progress bars, red styling, and Retry buttons on Free tier.
+
+### Conversation Refresh & Lifecycle
+- **Automatic Context Refresh:**
+  - Context tokens now refresh automatically when an assistant response finishes streaming (`cc:stream_completed`).
+  - Switching chats via sidebar or links instantly resets to loading state (`"—"`) and fetches the new conversation tree.
+  - Re-observes recreated `document.body` to guarantee panel self-healing even if Claude's framework re-renders the document root.
+
+### Real-Shape Unit Test Suite
+- Created `tests/fixtures/conversation_tree.json` using the confirmed claude.ai tree structure (empty `text: ""`, `content[].text`, attachments in `attachments[].extracted_content`, branching messages with root ID stop).
+- Created `tests/tokens.test.js` (10/10 tests passing) covering:
+  - Empty text + `content[].text` extraction
+  - Attachment `extracted_content` counting
+  - Branched tree leaf trunk isolation (ignoring abandoned branches)
+  - Root message ID (`00000000-0000-4000-8000-000000000000`) traversal stop
+  - Loading state (`isLoaded: false` -> `"—"`) vs genuine zero (`~0`)
+  - Over-limit (>200k) formatting, capped bar, and `>100%` display
+  - Consistent compact (k) formatting
+
+---
 
 ### Organization ID & Network Reliability
 - **Strict UUID Validation:** Enforced strict regex matching (`/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`) on all organization IDs. Explicitly rejects non-UUID URL slugs like `/api/organizations/discoverable`, preventing HTTP 400 Bad Request calls.

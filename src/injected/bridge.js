@@ -134,10 +134,10 @@
 					handleEventStream(response);
 				} else if (url && response.ok) {
 					// Check conversation payload
-					if (url.includes('/chat_conversations/')) {
+					if (method === 'GET' && url.includes('/chat_conversations/')) {
 						const meta = getConversationMeta(url);
 						if (meta) {
-							handleConversationResponse(meta, response);
+							handleConversationResponse(meta, response, url);
 						}
 					}
 					// Check usage endpoint intercepted
@@ -179,11 +179,15 @@
 				this.addEventListener('load', () => {
 					try {
 						if (this.status >= 200 && this.status < 300 && this.responseText) {
-							if (this.__cc_url.includes('/chat_conversations/')) {
+							if (this.__cc_method === 'GET' && this.__cc_url.includes('/chat_conversations/')) {
 								const meta = getConversationMeta(this.__cc_url);
 								if (meta) {
 									const data = JSON.parse(this.responseText);
-									post('cc:conversation', { orgId: meta.orgId, conversationId: meta.conversationId, data });
+									if (data && typeof data === 'object' && Array.isArray(data.chat_messages)) {
+										if (data.chat_messages.length > 0 || this.__cc_url.includes('tree=') || data.current_leaf_message_uuid) {
+											post('cc:conversation', { orgId: meta.orgId, conversationId: meta.conversationId, data });
+										}
+									}
 								}
 							} else if (this.__cc_url.includes('/usage') && this.__cc_url.includes('/api/organizations/')) {
 								const orgId = getOrgMeta(this.__cc_url);
@@ -202,10 +206,16 @@
 		};
 	}
 
-	async function handleConversationResponse({ orgId, conversationId }, response) {
+	async function handleConversationResponse({ orgId, conversationId }, response, requestUrl = '') {
 		try {
 			const cloned = response.clone();
 			const data = await cloned.json();
+			if (!data || typeof data !== 'object') return;
+			if (!Array.isArray(data.chat_messages)) return;
+			// Guard against shallow metadata GETs that lack tree data
+			if (data.chat_messages.length === 0 && !requestUrl.includes('tree=') && !data.current_leaf_message_uuid) {
+				return;
+			}
 			post('cc:conversation', { orgId, conversationId, data });
 		} catch {
 			// ignore parse failures

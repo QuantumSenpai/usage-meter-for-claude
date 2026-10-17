@@ -389,34 +389,27 @@
 			display: none;
 		}
 
-		/* State: Empty Plan Notice */
+		/* State: Empty Plan Notice (replaces Session & Weekly rows) */
 		.cc-empty-notice {
 			display: none;
 			align-items: center;
-			gap: 6px;
-			padding: 6px 8px;
-			background: rgba(128, 128, 128, 0.07);
-			border-radius: 4px;
+			justify-content: center;
+			text-align: center;
+			padding: 7px 10px;
+			background: rgba(128, 128, 128, 0.08);
+			border-radius: 6px;
 			font-size: 11px;
-			color: var(--cc-text-muted);
+			color: var(--cc-text-muted, #9ca3af);
+			line-height: 1.35;
 		}
 
 		.cc-state-empty .cc-empty-notice {
 			display: flex;
 		}
 
-		.cc-info-icon {
-			cursor: help;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			width: 14px;
-			height: 14px;
-			border-radius: 50%;
-			border: 1px solid currentColor;
-			font-size: 9px;
-			font-weight: bold;
-			flex-shrink: 0;
+		.cc-state-empty #cc-row-session,
+		.cc-state-empty #cc-row-weekly {
+			display: none !important;
 		}
 
 		/* State: Error */
@@ -580,7 +573,7 @@
 			// Metrics
 			this.metrics = {
 				hasConversation: false,
-				context: { tokens: 0, pct: null, formatted: '~0 / 200k' },
+				context: { isLoaded: false, tokens: null, pct: null, formatted: '— / 200k' },
 				session: { pct: null, resetsAt: null, windowStart: null },
 				weekly: { pct: null, resetsAt: null, windowStart: null },
 				cachedUntil: null,
@@ -698,12 +691,6 @@
 
 				<!-- Body Content -->
 				<div class="cc-body" id="cc-body">
-					<!-- State: Empty Plan Notice (calm neutral, NOT red) -->
-					<div class="cc-empty-notice" id="cc-empty-notice">
-						<span class="cc-info-icon" title="Free accounts or plans without rolling usage windows return null limits. Context tokens and prompt cache are still tracked.">i</span>
-						<span>No usage window active, or not provided for this plan</span>
-					</div>
-
 					<!-- State: Error Notice -->
 					<div class="cc-error-notice" id="cc-error-notice">
 						<span id="cc-error-msg">Usage currently unavailable</span>
@@ -715,13 +702,18 @@
 						<div class="cc-row-meta">
 							<span class="cc-row-label">Context</span>
 							<div class="cc-row-stat">
-								<span class="cc-val-main" id="cc-ctx-main">~0 / 200k</span>
-								<span class="cc-val-pct" id="cc-ctx-pct">0%</span>
+								<span class="cc-val-main" id="cc-ctx-main">— / 200k</span>
+								<span class="cc-val-pct" id="cc-ctx-pct">—</span>
 							</div>
 						</div>
 						<div class="cc-bar-track" role="progressbar" aria-label="Context utilization" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
 							<div class="cc-bar-fill" id="cc-ctx-bar"></div>
 						</div>
+					</div>
+
+					<!-- State: Empty Plan Notice (replaces Session & Weekly rows) -->
+					<div class="cc-empty-notice" id="cc-empty-notice">
+						<span>Session &amp; weekly limits not provided on this plan</span>
 					</div>
 
 					<!-- Session 5h Row -->
@@ -855,6 +847,7 @@
 			this._bindEvents();
 			this.applyThemeAndSettings();
 			this.applyPosition();
+			this.renderAll();
 		}
 
 		_bindEvents() {
@@ -1140,8 +1133,14 @@
 				return interpolateColor(this.settings.midColor, this.settings.highColor, (pct - 60) / 40);
 			};
 
-			if (this.dom.ctxBar && typeof this.metrics.context.pct === 'number') {
-				this.dom.ctxBar.style.backgroundColor = getColor(this.metrics.context.pct);
+			if (this.dom.ctxBar) {
+				if (!this.metrics.context.isLoaded) {
+					this.dom.ctxBar.style.backgroundColor = this.settings.lowColor;
+				} else if (this.metrics.context.tokens > (CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000)) {
+					this.dom.ctxBar.style.backgroundColor = this.settings.highColor;
+				} else if (typeof this.metrics.context.pct === 'number') {
+					this.dom.ctxBar.style.backgroundColor = getColor(this.metrics.context.pct);
+				}
 			}
 			if (this.dom.sessBar && typeof this.metrics.session.pct === 'number') {
 				this.dom.sessBar.style.backgroundColor = getColor(this.metrics.session.pct);
@@ -1179,25 +1178,61 @@
 			}
 		}
 
-		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
-			const tokens = typeof totalTokens === 'number' ? totalTokens : 0;
-			const pct = Math.max(0, Math.min(100, (tokens / CC.CONST.CONTEXT_LIMIT_TOKENS) * 100));
-
+		setConversationLoading() {
 			this.metrics.context = {
-				tokens,
-				pct,
-				formatted: `~${tokens.toLocaleString()} / 200k`
+				isLoaded: false,
+				tokens: null,
+				pct: null,
+				formatted: '— / 200k'
 			};
-			this.metrics.cachedUntil = cachedUntil;
+			this.metrics.cachedUntil = null;
 
 			if (this.dom.ctxMain) {
-				this.dom.ctxMain.textContent = this.metrics.context.formatted;
-				this.dom.ctxPct.textContent = `${pct.toFixed(1)}%`;
-				this.dom.ctxBar.style.width = `${pct}%`;
-				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
+				this.dom.ctxMain.textContent = '— / 200k';
+				this.dom.ctxPct.textContent = '—';
+				this.dom.ctxBar.style.width = '0%';
+				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', '0');
+				if (this.dom.rowCtx) this.dom.rowCtx.classList.remove('cc-high-utilization');
+			}
+
+			this.refreshBarColors();
+			this.updateSummary();
+		}
+
+		setConversationMetrics({ totalTokens, cachedUntil, isLoaded = true } = {}) {
+			if (!isLoaded || typeof totalTokens !== 'number' || isNaN(totalTokens)) {
+				this.setConversationLoading();
+				return;
+			}
+
+			const tokens = Math.max(0, Math.round(totalTokens));
+			const limit = CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000;
+			this.metrics.cachedUntil = cachedUntil;
+
+			const util = CC.tokens?.formatContextUtilization
+				? CC.tokens.formatContextUtilization(tokens, limit)
+				: {
+					formatted: tokens > limit ? `~${Math.round(tokens / 1000)}k / 200k` : `~${tokens >= 1000 ? Math.round(tokens / 1000) + 'k' : tokens} / 200k`,
+					percentText: tokens > limit ? '>100%' : (tokens === 0 ? '0%' : `${((tokens / limit) * 100).toFixed(1)}%`),
+					barPercent: Math.max(0, Math.min(100, (tokens / limit) * 100)),
+					isOverLimit: tokens > limit
+				};
+
+			this.metrics.context = {
+				isLoaded: true,
+				tokens,
+				pct: util.barPercent,
+				formatted: util.formatted
+			};
+
+			if (this.dom.ctxMain) {
+				this.dom.ctxMain.textContent = util.formatted;
+				this.dom.ctxPct.textContent = util.percentText;
+				this.dom.ctxBar.style.width = `${util.barPercent}%`;
+				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', util.barPercent.toFixed(1));
 
 				const row = this.dom.rowCtx;
-				if (row) row.classList.toggle('cc-high-utilization', pct >= 90);
+				if (row) row.classList.toggle('cc-high-utilization', util.isOverLimit || util.barPercent >= 90);
 			}
 
 			this.refreshBarColors();
@@ -1210,6 +1245,7 @@
 		 * { session: { pct, resetsAt }, weekly: { pct, resetsAt }, extras, state, errorReason }
 		 */
 		setNormalizedUsage(norm) {
+			this.currentNormalizedState = norm;
 			this.metrics.state = norm.state;
 			this.metrics.errorReason = norm.errorReason;
 
@@ -1280,6 +1316,32 @@
 			this.tick();
 		}
 
+		renderAll() {
+			if (!this.panel) return;
+
+			if (this.metrics.context.isLoaded && typeof this.metrics.context.tokens === 'number') {
+				this.setConversationMetrics({
+					totalTokens: this.metrics.context.tokens,
+					cachedUntil: this.metrics.cachedUntil,
+					isLoaded: true
+				});
+			} else {
+				this.setConversationLoading();
+			}
+
+			if (this.currentNormalizedState) {
+				this.setNormalizedUsage(this.currentNormalizedState);
+			} else {
+				this.panel.classList.toggle('cc-state-empty', this.metrics.state === 'empty');
+				this.panel.classList.toggle('cc-state-error', this.metrics.state === 'error');
+			}
+
+			this.setConversationActive(this.metrics.hasConversation);
+			this.setPendingCache(this.metrics.isPendingCache);
+			this.updateSummary();
+			this.tick();
+		}
+
 		updateSummary() {
 			if (!this.dom.pillSummary) return;
 			const parts = [];
@@ -1290,8 +1352,12 @@
 			if (this.metrics.weekly.pct !== null) {
 				parts.push(`${this.metrics.weekly.pct.toFixed(0)}% 7d`);
 			}
-			if (this.metrics.hasConversation && this.metrics.context.tokens > 0) {
-				parts.push(`~${Math.round(this.metrics.context.tokens / 1000)}k`);
+			if (this.metrics.hasConversation && this.metrics.context.isLoaded && typeof this.metrics.context.tokens === 'number') {
+				if (this.metrics.context.tokens >= 1000) {
+					parts.push(`~${Math.round(this.metrics.context.tokens / 1000)}k`);
+				} else {
+					parts.push(`~${this.metrics.context.tokens}`);
+				}
 			}
 
 			if (parts.length === 0) {

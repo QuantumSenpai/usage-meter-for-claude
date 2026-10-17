@@ -230,7 +230,7 @@
 	async function refreshConversation() {
 		await bridgeReady;
 		if (!currentConversationId) {
-			ui.setConversationMetrics();
+			ui.setConversationLoading();
 			return;
 		}
 
@@ -255,6 +255,9 @@
 			if (changed && (!currentNormalizedState || currentNormalizedState.state === 'empty')) {
 				refreshUsage({ force: true });
 			}
+			if (currentConversationId && (!ui.metrics.context.isLoaded || changed)) {
+				refreshConversation();
+			}
 		}
 	});
 
@@ -265,10 +268,13 @@
 
 	CC.bridge.on('cc:stream_completed', () => {
 		logDebug('stream_completed', {});
-		// Immediate post-message usage refresh (allowed to bypass 30s throttle)
+		// Immediate post-message usage and conversation refresh (allowed to bypass 30s throttle)
 		setTimeout(() => {
 			consecutiveFetchErrors = 0;
 			refreshUsage({ force: true });
+			if (currentConversationId) {
+				refreshConversation();
+			}
 		}, 1000);
 	});
 
@@ -295,12 +301,16 @@
 	CC.bridge.on('cc:conversation', async ({ orgId, conversationId, data }) => {
 		if (!conversationId || conversationId !== currentConversationId) return;
 		if (isValidOrgId(orgId)) resolveOrgId(orgId);
-		if (!data) return;
+		if (!data || typeof data !== 'object' || !Array.isArray(data.chat_messages)) return;
 
 		try {
 			const metrics = await CC.tokens.computeConversationMetrics(data);
 			logDebug('conversation_metrics_computed', { tokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
-			ui.setConversationMetrics({ totalTokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
+			ui.setConversationMetrics({
+				totalTokens: metrics.totalTokens,
+				cachedUntil: metrics.cachedUntil,
+				isLoaded: metrics.isLoaded
+			});
 		} catch (err) {
 			logDebug('conversation_metrics_error', { message: err?.message });
 		}
@@ -309,11 +319,20 @@
 	// ==========================================
 	// Panel Mounting & Self-Healing (Task 4)
 	// ==========================================
+	let lastObservedBody = null;
 	function ensurePanelAttached() {
 		const target = document.body || document.documentElement;
 		if (target && !target.contains(ui.rootElement)) {
 			ui.attach();
 			logDebug('panel_attached', {});
+		}
+		if (document.body && document.body !== lastObservedBody) {
+			lastObservedBody = document.body;
+			try {
+				healObserver.observe(document.body, { childList: true, subtree: false });
+			} catch {
+				// ignore
+			}
 		}
 	}
 
@@ -330,6 +349,7 @@
 	});
 	healObserver.observe(document.documentElement, { childList: true, subtree: false });
 	if (document.body) {
+		lastObservedBody = document.body;
 		healObserver.observe(document.body, { childList: true, subtree: false });
 	}
 
@@ -342,6 +362,7 @@
 
 	async function handleUrlChange() {
 		const newConvId = getConversationId();
+		const convChanged = newConvId !== currentConversationId;
 		const pathChanged = window.location.pathname !== lastKnownPath;
 		lastKnownPath = window.location.pathname;
 
@@ -351,8 +372,11 @@
 		ui.setConversationActive(!!currentConversationId);
 
 		if (!currentConversationId) {
-			ui.setConversationMetrics();
+			ui.setConversationLoading();
 		} else {
+			if (convChanged) {
+				ui.setConversationLoading();
+			}
 			await refreshConversation();
 		}
 
@@ -369,6 +393,14 @@
 			handleUrlChange();
 		}
 	}, 500);
+
+	// Sidebar & in-page chat navigation click listener
+	document.addEventListener('click', (e) => {
+		const link = e.target.closest('a[href*="/chat/"]');
+		if (link) {
+			setTimeout(handleUrlChange, 100);
+		}
+	});
 
 	// Branch navigation listener
 	document.addEventListener('click', (e) => {
