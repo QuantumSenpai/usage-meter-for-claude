@@ -857,6 +857,76 @@ async function test(name, fn) {
 		assert.strictEqual(_internal.getStreamRetryTimeoutId(), null, 'Must immediately clear retry timer upon switching chats');
 	});
 
+	// Test 18: Stream completion logs sse_event_types and message_limit_not_seen when message_limit is absent
+	await test('Diagnostics: completion stream logs sse_event_types and message_limit_not_seen when message_limit absent', async () => {
+		globalThis.__CC_DEBUG = true;
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const { _internal } = main;
+
+		// Simulate stream completion with event types and messageLimitSeen = false
+		bridgeListeners['cc:stream_completed']({
+			eventTypes: ['message_start', 'content_block_delta', 'message_stop'],
+			messageLimitSeen: false
+		});
+
+		const buffer = _internal.getDebugLogBuffer();
+		const typesEntry = buffer.find((e) => e.category === 'sse_event_types');
+		const notSeenEntry = buffer.find((e) => e.category === 'message_limit_not_seen');
+
+		assert.ok(typesEntry, 'Must log sse_event_types');
+		assert.deepStrictEqual(typesEntry.data.types, ['message_start', 'content_block_delta', 'message_stop']);
+		assert.ok(notSeenEntry, 'Must log message_limit_not_seen when message_limit was not seen');
+		globalThis.__CC_DEBUG = false;
+	});
+
+	// Test 19: Stream with message_limit logs message_limit_event_shape and suppresses message_limit_not_seen; usage logs usage_response_shape
+	await test('Diagnostics: logs message_limit_event_shape and usage_response_shape', async () => {
+		globalThis.__CC_DEBUG = true;
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const { _internal } = main;
+
+		// 1. Emit cc:message_limit_raw with sensitive string
+		const rawEvent = {
+			type: 'message_limit',
+			message_limit: {
+				resets_at: '2026-10-17T20:00:00Z',
+				utilization: 0.85,
+				user_prompt_text: 'Secret user prompt in chat'
+			}
+		};
+		bridgeListeners['cc:message_limit_raw'](rawEvent);
+
+		// 2. Stream completes with messageLimitSeen = true
+		bridgeListeners['cc:stream_completed']({
+			eventTypes: ['message_limit'],
+			messageLimitSeen: true
+		});
+
+		// 3. Trigger usage refresh with /usage payload
+		global.ClaudeCounter.bridge.requestUsage = async () => ({
+			five_hour: { utilization: 0.85, resets_at: 1729184400 },
+			seven_day: null,
+			tangelo: null
+		});
+		await _internal.refreshUsage({ force: true });
+
+		const buffer = _internal.getDebugLogBuffer();
+		const shapeEntry = buffer.find((e) => e.category === 'message_limit_event_shape');
+		const notSeenEntry = buffer.find((e) => e.category === 'message_limit_not_seen');
+		const usageShapeEntry = buffer.find((e) => e.category === 'usage_response_shape');
+
+		assert.ok(shapeEntry, 'Must log message_limit_event_shape');
+		assert.strictEqual(shapeEntry.data.message_limit.user_prompt_text, `[STR_${'Secret user prompt in chat'.length}_CHARS]`);
+		assert.strictEqual(notSeenEntry, undefined, 'Must NOT log message_limit_not_seen when message_limit was seen');
+
+		assert.ok(usageShapeEntry, 'Must log usage_response_shape');
+		assert.strictEqual(usageShapeEntry.data.five_hour.type, 'object');
+		assert.deepStrictEqual(usageShapeEntry.data.five_hour.children.utilization, { type: 'number', value: 0.85 });
+		assert.deepStrictEqual(usageShapeEntry.data.tangelo, { type: 'null' });
+
+		globalThis.__CC_DEBUG = false;
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();

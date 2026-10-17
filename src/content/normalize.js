@@ -116,12 +116,86 @@
 		};
 	}
 
+	function isIsoDateString(val) {
+		if (typeof val !== 'string') return false;
+		if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i.test(val)) return false;
+		return Number.isFinite(Date.parse(val));
+	}
+
+	function redactMessageLimitShape(val, depth = 0) {
+		if (val === null) return null;
+		if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+		if (typeof val === 'boolean') return val;
+		if (typeof val === 'string') {
+			if (/^[a-z_]{1,24}$/.test(val)) return val;
+			if (isIsoDateString(val)) return val;
+			return `[STR_${val.length}_CHARS]`;
+		}
+		if (typeof val === 'undefined') return undefined;
+
+		if (depth >= 4) {
+			if (Array.isArray(val)) return `[ARRAY_${val.length}]`;
+			if (typeof val === 'object') return `[OBJECT_${Object.keys(val).length}_KEYS]`;
+			return '[MAX_DEPTH]';
+		}
+
+		if (Array.isArray(val)) {
+			return val.map((item) => redactMessageLimitShape(item, depth + 1));
+		}
+
+		if (typeof val === 'object') {
+			const result = {};
+			for (const [k, v] of Object.entries(val)) {
+				result[k] = redactMessageLimitShape(v, depth + 1);
+			}
+			return result;
+		}
+
+		return '[OTHER]';
+	}
+
+	function redactUsageResponseShape(payload) {
+		if (!payload || typeof payload !== 'object') {
+			return { type: typeof payload };
+		}
+
+		function describeValue(val) {
+			if (val === null) return { type: 'null' };
+			if (Array.isArray(val)) return { type: 'array', length: val.length };
+			const t = typeof val;
+			if (t === 'number') {
+				return { type: 'number', value: Number.isFinite(val) ? val : null };
+			}
+			if (t === 'string') return { type: 'string' };
+			if (t === 'boolean') return { type: 'boolean' };
+			if (t === 'object') return { type: 'object' };
+			return { type: t };
+		}
+
+		const shape = {};
+		for (const [key, val] of Object.entries(payload)) {
+			if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+				const children = {};
+				for (const [childKey, childVal] of Object.entries(val)) {
+					children[childKey] = describeValue(childVal);
+				}
+				shape[key] = { type: 'object', children };
+			} else {
+				shape[key] = describeValue(val);
+			}
+		}
+		return shape;
+	}
+
 	const exp = {
 		UUID_REGEX,
 		isValidOrgId,
 		normalizeUtilization,
 		normalizeResetsAt,
-		normalizeUsagePayload
+		normalizeUsagePayload,
+		isIsoDateString,
+		redactMessageLimitShape,
+		redactUsageResponseShape
 	};
 
 	if (typeof module !== 'undefined' && module.exports) {

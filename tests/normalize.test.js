@@ -5,7 +5,10 @@ const {
 	isValidOrgId,
 	normalizeUsagePayload,
 	normalizeUtilization,
-	normalizeResetsAt
+	normalizeResetsAt,
+	isIsoDateString,
+	redactMessageLimitShape,
+	redactUsageResponseShape
 } = require('../src/content/normalize.js');
 
 function loadFixture(filename) {
@@ -133,6 +136,113 @@ test('Empty object payload produces state="empty"', () => {
 	assert.strictEqual(res.state, 'empty');
 	assert.strictEqual(res.errorReason, null);
 	assert.strictEqual(res.session.pct, null);
+});
+
+// 8. Diagnostic Shape Redaction Tests (v0.5.8)
+test('Diagnostics: redactMessageLimitShape preserves numbers, booleans, null, ISO dates, and short snake/lower strings', () => {
+	const payload = {
+		type: 'message_limit',
+		message_limit: {
+			tier: 'active_plan',
+			resets_at: '2026-10-17T20:00:00Z',
+			is_active: true,
+			null_field: null,
+			windows: {
+				'5h': {
+					utilization: 0.9,
+					resets_at: 1729184400
+				}
+			}
+		}
+	};
+
+	const redacted = redactMessageLimitShape(payload);
+	assert.strictEqual(redacted.type, 'message_limit');
+	assert.strictEqual(redacted.message_limit.tier, 'active_plan');
+	assert.strictEqual(redacted.message_limit.resets_at, '2026-10-17T20:00:00Z');
+	assert.strictEqual(redacted.message_limit.is_active, true);
+	assert.strictEqual(redacted.message_limit.null_field, null);
+	assert.strictEqual(redacted.message_limit.windows['5h'].utilization, 0.9);
+	assert.strictEqual(redacted.message_limit.windows['5h'].resets_at, 1729184400);
+});
+
+test('Diagnostics: redactMessageLimitShape NEVER emits raw string values for chat or user text', () => {
+	const sensitiveText = "You've used 90% of your session limit";
+	const userPrompt = 'Please summarize our confidential meeting notes.';
+	const payload = {
+		type: 'message_limit',
+		message_limit: {
+			warning_banner: sensitiveText,
+			conversation: {
+				user_message: userPrompt
+			}
+		}
+	};
+
+	const redacted = redactMessageLimitShape(payload);
+	const serialized = JSON.stringify(redacted);
+
+	// Ensure the raw sensitive strings are NEVER in the output
+	assert.strictEqual(serialized.includes(sensitiveText), false, 'Raw sensitive string must NOT be emitted');
+	assert.strictEqual(serialized.includes(userPrompt), false, 'Raw chat prompt must NOT be emitted');
+
+	// Verify exact redaction tokens
+	assert.strictEqual(redacted.message_limit.warning_banner, `[STR_${sensitiveText.length}_CHARS]`);
+	assert.strictEqual(redacted.message_limit.conversation.user_message, `[STR_${userPrompt.length}_CHARS]`);
+});
+
+test('Diagnostics: redactMessageLimitShape enforces depth limit <= 4', () => {
+	const deepPayload = {
+		l1: {
+			l2: {
+				l3: {
+					l4: {
+						l5_should_be_capped: {
+							secret: 'secret'
+						}
+					}
+				}
+			}
+		}
+	};
+
+	const redacted = redactMessageLimitShape(deepPayload);
+	assert.strictEqual(typeof redacted.l1.l2.l3, 'object');
+	assert.strictEqual(redacted.l1.l2.l3.l4, '[OBJECT_1_KEYS]');
+});
+
+test('Diagnostics: redactUsageResponseShape logs top-level and one-level-deep key names and types without leaking string contents', () => {
+	const sensitiveUsage = {
+		five_hour: {
+			utilization: 0.75,
+			resets_at: 1729184400,
+			description: 'Five hour floating usage window for user@example.com'
+		},
+		seven_day: {
+			utilization: 0.1,
+			resets_at: '2026-10-24T00:00:00Z'
+		},
+		extra_blob: 'encrypted_secret_token_12345',
+		tangelo: null,
+		iguana_necktie: null
+	};
+
+	const shape = redactUsageResponseShape(sensitiveUsage);
+	const serialized = JSON.stringify(shape);
+
+	// Strings must NOT be in the shape
+	assert.strictEqual(serialized.includes('Five hour floating usage window'), false);
+	assert.strictEqual(serialized.includes('user@example.com'), false);
+	assert.strictEqual(serialized.includes('encrypted_secret_token_12345'), false);
+
+	// Types and numeric values must match
+	assert.strictEqual(shape.five_hour.type, 'object');
+	assert.deepStrictEqual(shape.five_hour.children.utilization, { type: 'number', value: 0.75 });
+	assert.deepStrictEqual(shape.five_hour.children.resets_at, { type: 'number', value: 1729184400 });
+	assert.deepStrictEqual(shape.five_hour.children.description, { type: 'string' });
+	assert.deepStrictEqual(shape.extra_blob, { type: 'string' });
+	assert.deepStrictEqual(shape.tangelo, { type: 'null' });
+	assert.deepStrictEqual(shape.iguana_necktie, { type: 'null' });
 });
 
 console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

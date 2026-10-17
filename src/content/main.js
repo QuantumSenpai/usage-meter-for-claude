@@ -38,6 +38,17 @@
 		}
 	}
 
+	function isCcDebugActive() {
+		try {
+			if (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') {
+				return true;
+			}
+		} catch {
+			// ignore SecurityError / access denied
+		}
+		return Boolean(globalThis.__CC_DEBUG);
+	}
+
 	function logDebug(category, data = {}) {
 		const entry = {
 			time: new Date().toISOString(),
@@ -48,15 +59,7 @@
 		if (debugLogBuffer.length > CC.CONST.DEBUG_LOG_MAX_ENTRIES) {
 			debugLogBuffer.shift();
 		}
-		let isDebug = Boolean(globalThis.__CC_DEBUG);
-		try {
-			if (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') {
-				isDebug = true;
-			}
-		} catch {
-			// ignore SecurityError / access denied
-		}
-		if (isDebug) {
+		if (isCcDebugActive()) {
 			console.log(`[UsageMeter:Debug] [${category}]`, entry.data);
 		}
 	}
@@ -242,6 +245,10 @@
 				consecutiveFetchErrors = 0;
 				lastRawUsagePayload = raw;
 
+				if (isCcDebugActive() && CC.normalize?.redactUsageResponseShape) {
+					logDebug('usage_response_shape', CC.normalize.redactUsageResponseShape(raw));
+				}
+
 				const normalized = normalizeUsagePayload(raw, lastSseMessageLimit);
 				currentNormalizedState = normalized;
 
@@ -367,10 +374,18 @@
 		ui.setPendingCache(true);
 	});
 
-	CC.bridge.on('cc:stream_completed', () => {
+	CC.bridge.on('cc:stream_completed', (streamInfo = {}) => {
 		const streamEndMs = Date.now();
 		lastStreamEndMs = streamEndMs;
 		logDebug('stream_end', { conversationId: currentConversationId });
+
+		if (isCcDebugActive()) {
+			logDebug('sse_event_types', { types: Array.isArray(streamInfo?.eventTypes) ? streamInfo.eventTypes : [] });
+			if (!streamInfo?.messageLimitSeen) {
+				logDebug('message_limit_not_seen', {});
+			}
+		}
+
 		ensurePanelAttached();
 
 		// Immediate conversation refetch after stream completion
@@ -393,6 +408,12 @@
 		}, 1000);
 	});
 
+	CC.bridge.on('cc:message_limit_raw', (rawEvent) => {
+		if (isCcDebugActive() && CC.normalize?.redactMessageLimitShape) {
+			logDebug('message_limit_event_shape', CC.normalize.redactMessageLimitShape(rawEvent));
+		}
+	});
+
 	CC.bridge.on('cc:message_limit', (messageLimit) => {
 		logDebug('sse_message_limit_received', messageLimit);
 		lastSseMessageLimit = messageLimit;
@@ -407,6 +428,10 @@
 		if (isValidOrgId(orgId)) resolveOrgId(orgId);
 		logDebug('intercepted_usage_received', {});
 		lastRawUsagePayload = data;
+
+		if (isCcDebugActive() && CC.normalize?.redactUsageResponseShape) {
+			logDebug('usage_response_shape', CC.normalize.redactUsageResponseShape(data));
+		}
 
 		const normalized = normalizeUsagePayload(data, lastSseMessageLimit);
 		currentNormalizedState = normalized;
@@ -660,7 +685,9 @@
 		getCurrentConversationLeafId: () => currentConversationLeafId,
 		setCurrentConversationLeafId: (id) => { currentConversationLeafId = id; },
 		getStreamRetryTimeoutId: () => streamRetryTimeoutId,
-		getConversationPayloadSeq: () => conversationPayloadSeq
+		getConversationPayloadSeq: () => conversationPayloadSeq,
+		isCcDebugActive,
+		getDebugLogBuffer: () => debugLogBuffer
 	};
 
 	if (typeof module !== 'undefined' && module.exports) {

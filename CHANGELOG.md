@@ -2,6 +2,27 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.8] - 2026-10-17
+
+### Diagnostic Logging for Free Account SSE Streams & Usage Shapes
+- **SSE Stream Diagnostic Telemetry (`bridge.js` & `main.js`):**
+  - Added safe, redacted debug telemetry active only when `cc_debug` is enabled, routed to the existing redacting ring buffer (`debugLogBuffer`) so clicking the clipboard button copies complete diagnostics.
+  - `sse_event_types`: logs the list of SSE event type names seen per completion stream (names only).
+  - `message_limit_event_shape`: for every `message_limit` SSE event, recursively logs key names (depth <= 4). Values are preserved ONLY if number, boolean, null, ISO-8601 date string, or short lowercase/snake string (`/^[a-z_]{1,24}$/`). All other string values are redacted as `[STR_n_CHARS]`, strictly preventing chat or prompt text exposure.
+  - `usage_response_shape`: logs top-level and one-level-deep key names of `/usage` response along with value types (`number`, `null`, `string`, `object`, `array`) and numeric values. Obfuscated keys are logged by name only without parsing.
+  - `message_limit_not_seen`: logged once per completion stream if no `message_limit` event was received.
+- **Trace & Root Cause Analysis:**
+  - Audited `src/injected/bridge.js`, `src/content/bridge-client.js`, `src/content/main.js`, and `src/content/normalize.js`.
+  - Traced why Session/Weekly % and reset time are not shown on Free accounts:
+    1. Free plan `/usage` response returns all-null windows (`five_hour: null`, `seven_day: null`), resulting in `state: "empty"` (`tests/fixtures/free_plan.json`).
+    2. Anthropic's web UI displays session limit warnings ("You've used 90% of your session limit") via internal/client-side state or non-standard SSE events.
+    3. `bridge.js` strictly listens for `type === 'message_limit'` or `.message_limit` or `.windows`. If Claude does not emit `message_limit` SSE events on Free tier, no fallback data is dispatched.
+- **Automated Tests:**
+  - Added real-code unit tests in `tests/normalize.test.js` validating shape redaction, string privacy protection, depth capping, and `/usage` shape extraction.
+  - Added integration tests in `tests/mount.test.js` verifying debug log generation for streams with and without `message_limit` events and `/usage` responses.
+
+---
+
 ## [0.5.7] - 2026-10-17
 
 ### Chat Switch Race Fixes, Per-Chat In-Flight Dedupe & Context Input Debounce

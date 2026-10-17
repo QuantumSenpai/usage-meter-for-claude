@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.7)
+# Testing Checklist: Usage Meter for Claude (v0.5.8)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -340,6 +340,42 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
      - Type `150000` and stop: saves and applies after ~600ms debounce.
      - Type `300000` and press Enter: applies immediately on `change`.
      - Clear box completely and click outside (blur): resets to `200000` default.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 19. SSE Stream & Usage Diagnostics (v0.5.8)
+- **Preconditions:**
+  1. Open Brave DevTools (`Cmd + Option + I` or `F12`) -> **Console**.
+  2. Enable debug logging: `localStorage.setItem('cc_debug', 'true')`.
+  3. Reload the tab (`Cmd + Shift + R`).
+- **Steps:**
+  1. **SSE Event Types Logging (`sse_event_types`):**
+     - Send a prompt on Claude and observe stream completion.
+     - Look for `[UsageMeter:Debug] [sse_event_types]`.
+     - *Expected:* Logs `{ types: [...] }` containing the list of SSE event type names seen in the completion stream (e.g., `message_start`, `content_block_delta`, `message_stop`). Names only, no payload content or chat text.
+  2. **Message Limit Not Seen Telemetry (`message_limit_not_seen`):**
+     - If the completion stream contains no `message_limit` event (typical on Free accounts):
+     - *Expected:* Exactly one `[UsageMeter:Debug] [message_limit_not_seen]` log is emitted at stream conclusion.
+  3. **Message Limit Event Shape Telemetry (`message_limit_event_shape`):**
+     - If a `message_limit` event is received in the completion stream:
+     - *Expected:* Emits `[UsageMeter:Debug] [message_limit_event_shape]`.
+     - Recursively logs keys up to depth 4.
+     - Preserves values only if number, boolean, null, ISO-8601 date, or short string (`/^[a-z_]{1,24}$/`).
+     - Any long or non-matching string value is redacted to `[STR_n_CHARS]`.
+     - No chat text or user prompt content is ever emitted.
+  4. **Usage Response Shape Telemetry (`usage_response_shape`):**
+     - Trigger a `/usage` poll or inspect initial load.
+     - Look for `[UsageMeter:Debug] [usage_response_shape]`.
+     - *Expected:* Top-level and 1-level-deep key names are logged with their value type (`number`, `null`, `string`, `object`, `array`) and numeric values when numbers.
+     - Obfuscated keys (e.g. `tangelo`, `iguana_necktie`) log only key names and types, never parsed values.
+  5. **Ring Buffer & Clipboard Copy Export:**
+     - Click the clipboard copy icon in the Usage Meter UI.
+     - Paste into a text editor.
+     - *Expected:* Ring buffer contains all debug lines formatted cleanly with timestamp prefixes.
+     - Verify zero raw user text, tokens, or cookie secrets exist in the exported buffer.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________

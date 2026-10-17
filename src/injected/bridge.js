@@ -233,6 +233,10 @@
 	}
 
 	async function handleEventStream(response) {
+		let completedPosted = false;
+		const seenEventTypes = new Set();
+		let messageLimitSeen = false;
+
 		try {
 			const cloned = response.clone();
 			const reader = cloned.body?.getReader?.();
@@ -243,7 +247,6 @@
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
-					post('cc:stream_completed', {});
 					break;
 				}
 
@@ -251,12 +254,27 @@
 				const lines = buffer.split(/\r\n|\r|\n/);
 				buffer = lines.pop() || '';
 				for (const line of lines) {
+					if (line.startsWith('event:')) {
+						const evType = line.slice(6).trim();
+						if (evType) seenEventTypes.add(evType);
+						continue;
+					}
 					if (!line.startsWith('data:')) continue;
 					const raw = line.slice(5).trim();
 					if (!raw || raw === '[DONE]') continue;
 					try {
 						const json = JSON.parse(raw);
+						if (typeof json?.type === 'string' && json.type) {
+							seenEventTypes.add(json.type);
+						}
+
 						// Handle message_limit event format
+						const isMessageLimit = json?.type === 'message_limit' || Boolean(json?.message_limit) || (Boolean(json?.windows) && !json?.type);
+						if (isMessageLimit) {
+							messageLimitSeen = true;
+							post('cc:message_limit_raw', json);
+						}
+
 						if (json?.type === 'message_limit' && json.message_limit) {
 							post('cc:message_limit', json.message_limit);
 						} else if (json?.message_limit) {
@@ -271,6 +289,14 @@
 			}
 		} catch {
 			// best effort
+		} finally {
+			if (!completedPosted) {
+				completedPosted = true;
+				post('cc:stream_completed', {
+					eventTypes: Array.from(seenEventTypes),
+					messageLimitSeen
+				});
+			}
 		}
 	}
 
