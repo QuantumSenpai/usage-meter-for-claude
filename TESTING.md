@@ -10,7 +10,7 @@
   3. Click the copy-debug button in the settings drawer.
 - **Expected Results:**
   - Usage panel updates percentage and countdown as soon as `message_limit` event arrives.
-  - Copied debug log contains `sse_stream_seen` with `{ method, status: 200, pathShape, matchedBy }`.
+  - Copied debug log contains `sse_stream_seen` with `{ method, status: 200, host, pathShape, matchedBy }`.
   - If WebSockets or Workers were opened by the page, copied log contains `transport_created` entries with redacted `pathShape`.
   - No secret tokens, cookies, org IDs, or chat text appear in the debug log.
 - **Result:**

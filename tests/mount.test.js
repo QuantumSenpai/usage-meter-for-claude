@@ -1930,6 +1930,7 @@ async function test(name, fn) {
 		assert.ok(diagMsg, 'sse_stream_seen must be posted when debug is on');
 		assert.strictEqual(diagMsg.payload.data.matchedBy, 'content-type');
 		assert.strictEqual(diagMsg.payload.data.pathShape, '/api/organizations/:id/foo/bar');
+		assert.strictEqual(diagMsg.payload.data.host, 'claude.ai');
 		assert.strictEqual(diagMsg.payload.data.method, 'POST');
 		assert.strictEqual(diagMsg.payload.data.status, 200);
 	});
@@ -1965,29 +1966,44 @@ async function test(name, fn) {
 		assert.strictEqual(streamEnd, undefined, 'Must not stream-complete non-SSE responses');
 	});
 
-	// Test 40: 5(c) - SSE at a non-/api/ path is not intercepted
-	await test('5(c): SSE at a non-/api/ path is not intercepted', async () => {
+	// Test 40: 5(c) - SSE response at a non-/api/ path IS still parsed (breadth preserved)
+	await test('5(c): SSE response at a non-/api/ path IS still parsed (breadth preserved)', async () => {
 		const bridge = require('../src/injected/bridge.js');
 		const storage = createMockStorage();
 		global.localStorage = storage;
 		storage.setItem('cc_debug', 'true');
 
 		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
-		const sseResponse = createMockSseResponse('data: {"type":"message_limit"}\n\n');
+		const ssePayload = 'event: message_limit\ndata: {"type":"message_limit","message_limit":{"windows":{"5h":{"utilization":0.7}}}}\n\n';
+		const sseResponse = createMockSseResponse(ssePayload);
+		let currentResponse = sseResponse;
 
-		fakeWindow.fetch = async () => sseResponse;
+		fakeWindow.fetch = async () => currentResponse;
 		if (bridge.wrapFetch) bridge.wrapFetch(fakeWindow);
 
 		const res = await fakeWindow.fetch('https://claude.ai/telemetry/stream', {
 			method: 'POST'
 		});
-		assert.strictEqual(res, sseResponse);
+		assert.strictEqual(res, sseResponse, 'Page must receive original response untouched');
 
-		await new Promise(r => setTimeout(r, 20));
+		await new Promise(r => setTimeout(r, 50));
 		const sseDiag = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
-		assert.strictEqual(sseDiag, undefined, 'Must not intercept non-/api/ SSE stream');
+		assert.ok(sseDiag, 'Must emit sse_stream_seen for non-/api/ SSE stream');
+		assert.strictEqual(sseDiag.payload.data.matchedBy, 'content-type');
+		assert.strictEqual(sseDiag.payload.data.pathShape, '/telemetry/stream');
+		assert.strictEqual(sseDiag.payload.data.host, 'claude.ai');
 		const limitMsg = postedMessages.find(m => m.type === 'cc:message_limit');
-		assert.strictEqual(limitMsg, undefined, 'Must not forward limit from non-/api/ stream');
+		assert.ok(limitMsg, 'Must forward cc:message_limit from non-/api/ stream');
+		assert.strictEqual(limitMsg.payload?.windows?.['5h']?.utilization, 0.7);
+
+		// Also test cross-host SSE stream
+		currentResponse = createMockSseResponse('data: {"type":"ping"}\n\n');
+		await fakeWindow.fetch('https://stats.anthropic.com/events', { method: 'GET' });
+		await new Promise(r => setTimeout(r, 20));
+		const crossHostDiag = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen' && m.payload?.data?.host === 'stats.anthropic.com');
+		assert.ok(crossHostDiag, 'Must emit sse_stream_seen with hostname for cross-host SSE');
+		assert.strictEqual(crossHostDiag.payload.data.host, 'stats.anthropic.com');
+		assert.strictEqual(crossHostDiag.payload.data.pathShape, '/events');
 	});
 
 	// Test 41: 5(d) - Existing completion URL still works
@@ -2021,6 +2037,7 @@ async function test(name, fn) {
 		assert.ok(diagMsg, 'sse_stream_seen must be posted');
 		assert.strictEqual(diagMsg.payload.data.matchedBy, 'url', 'Legacy completion URL must be matchedBy url');
 		assert.strictEqual(diagMsg.payload.data.pathShape, '/api/organizations/:id/chat_conversations/:id/completion');
+		assert.strictEqual(diagMsg.payload.data.host, 'claude.ai');
 	});
 
 	// Test 42: 5(e) - pathShape redaction cases (uuid, hex, digits, query stripped, blob:)

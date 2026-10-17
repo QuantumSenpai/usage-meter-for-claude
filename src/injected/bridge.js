@@ -92,8 +92,6 @@
 		});
 	}
 
-	let testDebugMode = null;
-
 	function isDebugActive() {
 		try {
 			const storage = (typeof window !== 'undefined' && window.localStorage)
@@ -109,7 +107,7 @@
 		if (typeof globalThis !== 'undefined' && typeof globalThis.__CC_DEBUG === 'boolean') {
 			return globalThis.__CC_DEBUG;
 		}
-		return Boolean(testDebugMode);
+		return false;
 	}
 
 	function postDiag(category, data) {
@@ -126,27 +124,33 @@
 			const ct = (typeof response?.headers?.get === 'function'
 				? response.headers.get('content-type')
 				: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
-			return typeof ct === 'string' && ct.toLowerCase().includes('text/event-stream');
+			return typeof ct === 'string' && ct.toLowerCase().includes('event-stream');
 		} catch {
 			return false;
 		}
 	}
 
-	function parseUrlDetails(rawUrl) {
+	function getHost(rawUrl) {
 		try {
+			let urlStr = '';
+			if (typeof rawUrl === 'string') {
+				urlStr = rawUrl.trim();
+			} else if (rawUrl instanceof URL) {
+				urlStr = rawUrl.href;
+			} else if (typeof Request !== 'undefined' && rawUrl instanceof Request) {
+				urlStr = rawUrl.url;
+			}
+			if (!urlStr) return '';
+			if (urlStr.startsWith('blob:') || urlStr.startsWith('data:')) {
+				return '';
+			}
 			const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
 				? window.location.origin
 				: 'https://claude.ai';
-			const parsed = new URL(rawUrl, baseOrigin);
-			const isSameOrigin = (typeof window !== 'undefined' && window.location?.origin)
-				? parsed.origin === window.location.origin
-				: parsed.origin === 'https://claude.ai';
-			return {
-				isSameOrigin,
-				pathname: parsed.pathname || ''
-			};
+			const parsed = new URL(urlStr, baseOrigin);
+			return parsed.hostname || '';
 		} catch {
-			return { isSameOrigin: false, pathname: '' };
+			return '';
 		}
 	}
 
@@ -232,24 +236,26 @@
 			try {
 				let matchedBy = null;
 				const isSse = isSseResponse(response);
+				const isCompletionUrl = Boolean(url && (url.includes('/completion') || url.includes('/retry_completion')));
 
-				if (url && (url.includes('/completion') || url.includes('/retry_completion')) && isSse) {
+				if (isCompletionUrl) {
 					matchedBy = 'url';
-				} else {
-					const { isSameOrigin, pathname } = parseUrlDetails(url);
-					if (isSameOrigin && pathname.startsWith('/api/') && isSse) {
-						matchedBy = 'content-type';
-					}
+				} else if (isSse) {
+					matchedBy = 'content-type';
 				}
 
 				if (matchedBy) {
-					const pathShape = computePathShape(url);
-					postDiag('sse_stream_seen', {
-						method,
-						status: response.status,
-						pathShape,
-						matchedBy
-					});
+					if (isSse) {
+						const pathShape = computePathShape(url);
+						const host = getHost(url);
+						postDiag('sse_stream_seen', {
+							method,
+							status: response.status,
+							host,
+							pathShape,
+							matchedBy
+						});
+					}
 					handleEventStream(response);
 				} else if (url && response.ok) {
 					// Check conversation payload
@@ -570,11 +576,11 @@
 		module.exports = {
 			handleEventStream,
 			isSseResponse,
+			getHost,
 			computePathShape,
 			wrapTransportConstructor,
 			initTransportProxies,
-			wrapFetch,
-			setDebugModeForTesting: (val) => { testDebugMode = val; }
+			wrapFetch
 		};
 	}
 })();
