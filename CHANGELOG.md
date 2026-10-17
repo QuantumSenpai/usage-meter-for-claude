@@ -2,6 +2,21 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.2] - 2026-10-17
+
+### Fix Session and Weekly Row Visibility in Empty and Error States
+- **Row Visibility in All States:**
+  - Removed `.cc-state-empty #cc-row-session, .cc-state-empty #cc-row-weekly { display: none !important; }` rule from stylesheet. Rows are never hidden by panel state.
+  - In empty state, each row displays its label, neutral 0% bar, `" — "` for percent used/left, and `" — "` for reset time.
+- **Notices Relocated to Normal Document Flow:**
+  - Moved `#cc-empty-notice` and `#cc-error-notice` out of `<div style="display: none;">` into `.cc-usage-container` directly beneath the usage rows.
+  - Centered text alignment for `#cc-empty-notice`: `"No data yet. Updates after your next message."`.
+- **Consistent Dash Rendering on Empty and Error States:**
+  - Fixed fallback text in template and `renderSessionAndWeekly()`: when reset time is unavailable or plan data has not arrived yet, reset text renders `" — "` (never blank `""` or verbose inline text).
+- **Automated Verification:**
+  - Added general CSS parser test checking `UI_STYLES` ensures no rules targeting `#cc-row-session`, `#cc-row-weekly`, `.cc-row--session`, or `.cc-row--weekly` have `display: none` or hiding properties (generic `.cc-hidden` allowed).
+  - Added real `CounterUI` render path tests asserting visible rows with `" — "` spans and visible notices (not inside hidden ancestors) for empty, error, and ok states.
+
 ## [0.6.1] - 2026-10-17
 
 ### Fix Empty Panel Bug & Legacy Settings Migration

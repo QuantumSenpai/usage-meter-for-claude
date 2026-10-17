@@ -554,17 +554,12 @@
 			font-size: 11px;
 			color: var(--cc-text-muted);
 			padding: 4px 0;
-			text-align: left;
+			text-align: center;
 			user-select: text;
 		}
 
 		.cc-state-empty .cc-empty-notice {
 			display: block;
-		}
-
-		.cc-state-empty #cc-row-session,
-		.cc-state-empty #cc-row-weekly {
-			display: none !important;
 		}
 
 		/* State: Error */
@@ -981,7 +976,7 @@
 						</div>
 						<div class="cc-stat-col">
 							<span class="cc-val-pct" id="cc-sess-pct">—</span>
-							<span class="cc-val-reset" id="cc-sess-reset">Updates after your next message</span>
+							<span class="cc-val-reset" id="cc-sess-reset">—</span>
 						</div>
 					</div>
 
@@ -998,7 +993,7 @@
 						</div>
 						<div class="cc-stat-col">
 							<span class="cc-val-pct" id="cc-week-pct">—</span>
-							<span class="cc-val-reset" id="cc-week-reset">Updates after your next message</span>
+							<span class="cc-val-reset" id="cc-week-reset">—</span>
 						</div>
 					</div>
 
@@ -1032,6 +1027,15 @@
 							<span class="cc-val-reset" id="cc-cache-text">—</span>
 						</div>
 					</div>
+
+					<!-- Empty Plan Notice (Visible in cc-state-empty) -->
+					<div class="cc-empty-notice" id="cc-empty-notice">No data yet. Updates after your next message.</div>
+
+					<!-- Error Notice (Visible in cc-state-error) -->
+					<div class="cc-error-notice" id="cc-error-notice">
+						<span id="cc-error-msg">Usage currently unavailable</span>
+						<button class="cc-retry-btn" id="cc-retry-btn">Retry</button>
+					</div>
 				</div>
 
 				<!-- Hidden compatibility elements for test suite -->
@@ -1039,8 +1043,6 @@
 					<div id="cc-summary-line"></div>
 					<div id="cc-details"></div>
 					<button id="cc-expand-btn" aria-expanded="false"></button>
-					<div id="cc-empty-notice"></div>
-					<div id="cc-error-notice"><span id="cc-error-msg">Usage currently unavailable</span><button id="cc-retry-btn">Retry</button></div>
 				</div>
 
 				<!-- Settings Drawer -->
@@ -1689,7 +1691,7 @@
 						this.dom.sessPct.title = '';
 					}
 					if (this.dom.sessReset) {
-						this.dom.sessReset.textContent = 'Updates after your next message';
+						this.dom.sessReset.textContent = '—';
 						this.dom.sessReset.title = '';
 					}
 					if (this.dom.sessBar) {
@@ -1731,7 +1733,7 @@
 					}
 					if (this.dom.sessReset) {
 						const diffMs = sessResetsAtMs ? sessResetsAtMs - now : 0;
-						this.dom.sessReset.textContent = sessResetsAtMs ? formatSessionCountdown(diffMs) : '';
+						this.dom.sessReset.textContent = sessResetsAtMs ? formatSessionCountdown(diffMs) : '—';
 						this.dom.sessReset.title = '';
 					}
 					if (this.dom.sessBar) {
@@ -1758,7 +1760,7 @@
 						this.dom.weekPct.title = '';
 					}
 					if (this.dom.weekReset) {
-						this.dom.weekReset.textContent = 'Updates after your next message';
+						this.dom.weekReset.textContent = '—';
 						this.dom.weekReset.title = '';
 					}
 					if (this.dom.weekBar) {
@@ -1800,7 +1802,7 @@
 					}
 					if (this.dom.weekReset) {
 						const diffMs = weekResetsAtMs ? weekResetsAtMs - now : 0;
-						this.dom.weekReset.textContent = weekResetsAtMs ? formatWeeklyCountdown(diffMs) : '';
+						this.dom.weekReset.textContent = weekResetsAtMs ? formatWeeklyCountdown(diffMs) : '—';
 						this.dom.weekReset.title = weekResetsAtMs ? formatWeeklyLocalClock(weekResetsAtMs) : '';
 					}
 					if (this.dom.weekBar) {
@@ -1926,9 +1928,10 @@
 		}
 	}
 
-	CC.ui = { CounterUI, PRESETS };
+	CounterUI.UI_STYLES = UI_STYLES;
+	CC.ui = { CounterUI, PRESETS, UI_STYLES };
 
 	if (typeof module !== 'undefined' && module.exports) {
-		module.exports = { CounterUI, PRESETS };
+		module.exports = { CounterUI, PRESETS, UI_STYLES };
 	}
 })();

@@ -1,4 +1,47 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.1)
+# Testing Checklist: Usage Meter for Claude (v0.6.2)
+
+## Brave Checklist (v0.6.2 Empty & Error State Row Visibility Verification)
+
+### 1. Fresh Profile / Empty Usage State
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai`.
+- **Steps:**
+  1. Open DevTools Console and clear stored usage data or test fresh profile:
+     ```javascript
+     localStorage.clear();
+     ```
+  2. Perform a hard refresh: `Cmd + Shift + R` (macOS) or `Ctrl + Shift + R` (Windows/Linux).
+- **Expected Results:**
+  - Panel is mounted above the composer card with class `cc-state-empty`.
+  - Header **Usage Limits** and gear icon render immediately.
+  - Both **Session (5h)** and **Weekly (7d)** rows are **VISIBLE** (computed `display: flex`, NOT `display: none`).
+  - Progress bars are at 0% width with neutral/low tier color.
+  - Percentage spans (`#cc-sess-pct`, `#cc-week-pct`) display `" — "`.
+  - Reset spans (`#cc-sess-reset`, `#cc-week-reset`) display `" — "` (not blank and not verbose text).
+  - Centered notice beneath rows displays: `"No data yet. Updates after your next message."`.
+  - Empty notice is directly in the usage container and NOT inside any `display: none` wrapper.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. Error State Handling
+- **Preconditions:** Extension mounted on `https://claude.ai`.
+- **Steps:**
+  1. Trigger error state (e.g. simulate offline network or rate limit).
+- **Expected Results:**
+  - Panel has class `cc-state-error`.
+  - Both **Session (5h)** and **Weekly (7d)** rows remain **VISIBLE**.
+  - Percentage spans display `" — "` and reset spans display `" — "`.
+  - Error notice beneath rows displays error message and Retry button.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 3. Active / OK Usage State
+- **Preconditions:** Send a message on `https://claude.ai` to receive SSE `message_limit` or fetch `/usage`.
+- **Expected Results:**
+  - Panel has class `cc-state-ok` (neither `cc-state-empty` nor `cc-state-error`).
+  - Both rows display `"X% used · Y% left"` and respective reset countdowns.
+  - Both notice elements are hidden.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave Checklist (v0.6.1 Bug Fix Verification)
 

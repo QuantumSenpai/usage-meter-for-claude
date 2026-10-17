@@ -1178,9 +1178,17 @@ async function test(name, fn) {
 			const voidTags = new Set(['input', 'img', 'br', 'hr', 'rect', 'circle', 'path']);
 			let stack = [parent];
 			let match;
+			let lastIdx = 0;
 
 			while ((match = tagRegex.exec(cleaned)) !== null) {
 				const [full, closeTag, openTag, attrStr, selfClose] = match;
+				const textBetween = cleaned.slice(lastIdx, match.index).trim();
+				if (textBetween && stack.length > 0) {
+					const top = stack[stack.length - 1];
+					top._rawText = (top._rawText ? top._rawText + ' ' : '') + textBetween;
+				}
+				lastIdx = tagRegex.lastIndex;
+
 				if (closeTag) {
 					const tagUpper = closeTag.toUpperCase();
 					if (stack.length > 1 && stack[stack.length - 1].tagName === tagUpper) {
@@ -1220,8 +1228,8 @@ async function test(name, fn) {
 				this.shadowRoot = null;
 				this.style = {
 					properties: {},
-					setProperty(k, v) { this.properties[k] = String(v); },
-					getPropertyValue(k) { return this.properties[k] || ''; }
+					setProperty(k, v) { this.properties[k] = String(v); this[k] = String(v); },
+					getPropertyValue(k) { return this.properties[k] || this[k] || ''; }
 				};
 				this.attributes = {};
 				this._classes = new Set();
@@ -1250,10 +1258,21 @@ async function test(name, fn) {
 				};
 				this.listeners = {};
 				this.dataset = {};
-				this.textContent = '';
+				this._textContent = undefined;
+				this._rawText = '';
 				this.title = '';
 				this.value = '';
 				this.checked = false;
+			}
+
+			get textContent() {
+				if (this._textContent !== undefined) return this._textContent;
+				if (this.children.length === 0) return this._rawText || '';
+				return this.children.map(c => c.textContent).join('');
+			}
+
+			set textContent(val) {
+				this._textContent = String(val);
 			}
 
 			set innerHTML(html) {
@@ -1283,6 +1302,18 @@ async function test(name, fn) {
 				if (k === 'class') {
 					this.className = String(v);
 					this._classes = new Set(this.className.split(/\s+/).filter(Boolean));
+				}
+				if (k === 'style') {
+					const stylePairs = String(v).split(';').map(s => s.trim()).filter(Boolean);
+					for (const pair of stylePairs) {
+						const [prop, ...valParts] = pair.split(':');
+						if (prop && valParts.length > 0) {
+							const propName = prop.trim();
+							const propVal = valParts.join(':').trim();
+							this.style[propName] = propVal;
+							this.style.setProperty(propName, propVal);
+						}
+					}
 				}
 			}
 
@@ -1604,6 +1635,220 @@ async function test(name, fn) {
 		assert.strictEqual(JSON.stringify(stateLog.data).includes('secret_val'), false, 'Never log values');
 	});
 
+	// Test 35: Amendment 2: Test A - General CSS parser over UI_STYLES
+	await test('Test A (Amendment 2): parse every CSS rule in UI_STYLES; fail if row selectors have display:none or hiding properties', () => {
+		const uiModule = require('../src/content/ui.js');
+		let uiStyles = uiModule.UI_STYLES || uiModule.CounterUI?.UI_STYLES;
+		if (!uiStyles) {
+			const content = fs.readFileSync(path.join(__dirname, '../src/content/ui.js'), 'utf8');
+			const match = content.match(/const\s+UI_STYLES\s*=\s*`([\s\S]*?)`;/);
+			if (match) uiStyles = match[1];
+		}
+		assert.ok(uiStyles && typeof uiStyles === 'string', 'UI_STYLES must be non-empty string');
+
+		function parseCSSRules(css) {
+			const noComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+			function extractRules(text) {
+				const result = [];
+				let pos = 0;
+				while (pos < text.length) {
+					const openBrace = text.indexOf('{', pos);
+					if (openBrace === -1) break;
+
+					const selector = text.slice(pos, openBrace).trim();
+					let depth = 1;
+					let closeBrace = openBrace + 1;
+					while (closeBrace < text.length && depth > 0) {
+						if (text[closeBrace] === '{') depth++;
+						else if (text[closeBrace] === '}') depth--;
+						closeBrace++;
+					}
+
+					const body = text.slice(openBrace + 1, closeBrace - 1).trim();
+					pos = closeBrace;
+
+					if (selector.startsWith('@media') || selector.startsWith('@supports')) {
+						result.push(...extractRules(body));
+					} else if (selector.startsWith('@keyframes')) {
+						// Keyframes steps, skip
+					} else if (selector) {
+						result.push({ selector, body });
+					}
+				}
+				return result;
+			}
+			return extractRules(noComments);
+		}
+
+		const rules = parseCSSRules(uiStyles);
+		assert.ok(rules.length > 10, `Expected many CSS rules, got ${rules.length}`);
+
+		const targetTokens = ['#cc-row-session', '#cc-row-weekly', '.cc-row--session', '.cc-row--weekly'];
+		const violations = [];
+
+		for (const rule of rules) {
+			// Allowed: the generic .cc-hidden class only
+			if (rule.selector.trim() === '.cc-hidden') continue;
+
+			const matchedToken = targetTokens.find(token => rule.selector.includes(token));
+			if (!matchedToken) continue;
+
+			// Check for hiding properties in the body
+			const normBody = rule.body.replace(/\s+/g, '').toLowerCase();
+			const hasDisplayNone = normBody.includes('display:none');
+			const hasVisibilityHidden = normBody.includes('visibility:hidden');
+			const hasHeightZero = /(^|;)(max-)?height:0(px)?([;!]|$)/.test(normBody);
+			const hasOpacityZero = /(^|;)opacity:0([;!]|$)/.test(normBody);
+
+			if (hasDisplayNone || hasVisibilityHidden || hasHeightZero || hasOpacityZero) {
+				violations.push({
+					selector: rule.selector,
+					body: rule.body,
+					matchedToken
+				});
+			}
+		}
+
+		assert.strictEqual(
+			violations.length,
+			0,
+			`Disallowed hiding CSS rules found for row selectors: ${JSON.stringify(violations, null, 2)}`
+		);
+	});
+
+	// Test 36: Amendment 4: Test B - Real CounterUI render path for empty and error states asserting on textContent
+	await test('Test B (Amendment 4): real CounterUI render path asserts on textContent for empty and error states', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+
+		const ui = new CounterUI();
+		ui.initialize();
+
+		// Helper to check for hiding ancestors
+		function assertNoHidingAncestor(element, elementName) {
+			let cur = element.parentElement;
+			while (cur) {
+				const inlineDisplay = cur.style?.display || cur.style?.getPropertyValue?.('display');
+				if (inlineDisplay === 'none') {
+					assert.fail(`${elementName} is inside display:none ancestor: <${cur.tagName} id="${cur.id}">`);
+				}
+				const styleAttr = cur.getAttribute?.('style') || '';
+				if (/display\s*:\s*none/i.test(styleAttr)) {
+					assert.fail(`${elementName} is inside display:none style attribute: <${cur.tagName} id="${cur.id}">`);
+				}
+				if (cur.classList?.contains?.('cc-hidden')) {
+					assert.fail(`${elementName} is inside .cc-hidden ancestor: <${cur.tagName} id="${cur.id}">`);
+				}
+				cur = cur.parentElement;
+			}
+		}
+
+		// 1. State: Empty
+		ui.setNormalizedUsage({ state: 'empty' });
+
+		const rowSessEmpty = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeekEmpty = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.ok(rowSessEmpty, 'Session row must exist in DOM');
+		assert.ok(rowWeekEmpty, 'Weekly row must exist in DOM');
+		assert.strictEqual(rowSessEmpty.classList.contains('cc-hidden'), false, 'Session row must not have cc-hidden in empty state');
+		assert.strictEqual(rowWeekEmpty.classList.contains('cc-hidden'), false, 'Weekly row must not have cc-hidden in empty state');
+
+		const sessPctEmpty = ui.shadowRoot.getElementById('cc-sess-pct');
+		const sessResetEmpty = ui.shadowRoot.getElementById('cc-sess-reset');
+		const weekPctEmpty = ui.shadowRoot.getElementById('cc-week-pct');
+		const weekResetEmpty = ui.shadowRoot.getElementById('cc-week-reset');
+
+		assert.strictEqual(sessPctEmpty.textContent, '—', 'sessPct must be non-empty "—" in empty state');
+		assert.strictEqual(sessResetEmpty.textContent, '—', 'sessReset must be non-empty "—" in empty state');
+		assert.strictEqual(weekPctEmpty.textContent, '—', 'weekPct must be non-empty "—" in empty state');
+		assert.strictEqual(weekResetEmpty.textContent, '—', 'weekReset must be non-empty "—" in empty state');
+
+		const emptyNotice = ui.shadowRoot.getElementById('cc-empty-notice');
+		assert.ok(emptyNotice, 'Empty notice must exist in DOM');
+		assert.strictEqual(emptyNotice.textContent, 'No data yet. Updates after your next message.', 'Empty notice text must match exactly');
+		assertNoHidingAncestor(emptyNotice, '#cc-empty-notice');
+		assert.strictEqual(ui.panel.classList.contains('cc-state-empty'), true, 'Panel must have cc-state-empty class');
+		assert.strictEqual(ui.panel.classList.contains('cc-state-error'), false, 'Panel must not have cc-state-error class');
+
+		// 2. State: Error
+		ui.setNormalizedUsage({ state: 'error', errorReason: 'Network error 503' });
+
+		const rowSessErr = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeekErr = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.ok(rowSessErr, 'Session row must exist in error state');
+		assert.ok(rowWeekErr, 'Weekly row must exist in error state');
+		assert.strictEqual(rowSessErr.classList.contains('cc-hidden'), false, 'Session row must not have cc-hidden in error state');
+		assert.strictEqual(rowWeekErr.classList.contains('cc-hidden'), false, 'Weekly row must not have cc-hidden in error state');
+
+		const sessPctErr = ui.shadowRoot.getElementById('cc-sess-pct');
+		const sessResetErr = ui.shadowRoot.getElementById('cc-sess-reset');
+		const weekPctErr = ui.shadowRoot.getElementById('cc-week-pct');
+		const weekResetErr = ui.shadowRoot.getElementById('cc-week-reset');
+
+		assert.strictEqual(sessPctErr.textContent, '—', 'sessPct must be "—" in error state');
+		assert.strictEqual(sessResetErr.textContent, '—', 'sessReset must be "—" in error state');
+		assert.strictEqual(weekPctErr.textContent, '—', 'weekPct must be "—" in error state');
+		assert.strictEqual(weekResetErr.textContent, '—', 'weekReset must be "—" in error state');
+
+		const errorNotice = ui.shadowRoot.getElementById('cc-error-notice');
+		assert.ok(errorNotice, 'Error notice must exist in DOM');
+		const errorMsg = ui.shadowRoot.getElementById('cc-error-msg');
+		assert.strictEqual(errorMsg.textContent, 'Network error 503', 'Error message textContent must match errorReason');
+		assertNoHidingAncestor(errorNotice, '#cc-error-notice');
+		assert.strictEqual(ui.panel.classList.contains('cc-state-error'), true, 'Panel must have cc-state-error class');
+		assert.strictEqual(ui.panel.classList.contains('cc-state-empty'), false, 'Panel must not have cc-state-empty class');
+	});
+
+	// Test 37: State OK Preservation - Real CounterUI render path for active usage
+	await test('State OK Preservation: real CounterUI renders "X% used · Y% left" and reset countdown in ok state', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+
+		const ui = new CounterUI();
+		ui.initialize();
+
+		const now = Date.now();
+		ui.setNormalizedUsage({
+			state: 'ok',
+			session: {
+				pct: 35,
+				pctUsed: 35,
+				pctLeft: 65,
+				resetsAt: new Date(now + 3600 * 1000 * 3).toISOString()
+			},
+			weekly: {
+				pct: 15,
+				pctUsed: 15,
+				pctLeft: 85,
+				resetsAt: new Date(now + 3600 * 1000 * 50).toISOString()
+			}
+		});
+
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeek = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.ok(rowSess, 'Session row exists');
+		assert.ok(rowWeek, 'Weekly row exists');
+		assert.strictEqual(rowSess.classList.contains('cc-hidden'), false, 'Session row not hidden');
+		assert.strictEqual(rowWeek.classList.contains('cc-hidden'), false, 'Weekly row not hidden');
+
+		const sessPct = ui.shadowRoot.getElementById('cc-sess-pct');
+		const sessReset = ui.shadowRoot.getElementById('cc-sess-reset');
+		const weekPct = ui.shadowRoot.getElementById('cc-week-pct');
+		const weekReset = ui.shadowRoot.getElementById('cc-week-reset');
+
+		assert.strictEqual(sessPct.textContent, '35% used · 65% left', 'sessPct shows "X% used · Y% left"');
+		assert.ok(sessReset.textContent.includes('resets in'), `sessReset countdown text must be present, got: "${sessReset.textContent}"`);
+
+		assert.strictEqual(weekPct.textContent, '15% used · 85% left', 'weekPct shows "X% used · Y% left"');
+		assert.ok(weekReset.textContent.includes('d') || weekReset.textContent.includes('h'), `weekReset countdown text must be present, got: "${weekReset.textContent}"`);
+
+		assert.strictEqual(ui.panel.classList.contains('cc-state-empty'), false, 'Panel must not have cc-state-empty');
+		assert.strictEqual(ui.panel.classList.contains('cc-state-error'), false, 'Panel must not have cc-state-error');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();
+
