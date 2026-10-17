@@ -2,6 +2,59 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.3] - 2026-10-17
+
+### Inline Mounting Above Composer Card
+- **Removed Floating / Fixed Overlay:** Completely removed fixed positioning, drag handles, drag event listeners, pill mode, and `cc_panel_pos` / `cc_pill` logic.
+- **Inline DOM Anchor & Resolution:**
+  - Anchor: `document.querySelector('[data-testid="chat-input"]')`.
+  - Composer Card: `anchor.closest('[class*="bg-surface-3"]')` with exact 6th-ancestor fallback when Tailwind class hashes change.
+  - Mount Position: Inserted as the immediate previous sibling of Card (`Card.parentElement.insertBefore(ui.rootElement, Card)`).
+  - Document Flow: Normal in-flow block element matching composer card width, with an 8px bottom margin. Zero overlap and zero layout shift of the conversation message list.
+  - Graceful Fallback: If anchor or Card is not found, renders nothing, logs a debug line, and retries via throttled MutationObserver. Never falls back to a floating or fixed overlay.
+- **Duplicate Prevention & Self-Healing:**
+  - Guarded by root ID `#cc-usage-meter-root`; removes any stale duplicate elements.
+  - Re-checks and heals mount point on SPA URL navigation (`handleUrlChange`), stream completion (`cc:stream_completed`), and via a throttled (100ms) MutationObserver on the container. Preserves widget state across re-renders.
+
+### Compact Default View (Thin Line) & Collapsible Details
+- **Default View (One Thin Line):**
+  - Height: ~26px compact native bar sitting 8px above composer card.
+  - Left: Context label, mini context progress bar, token count (e.g. `~231k / 200k`), and percentage text (`>100%`).
+  - Right: Expand/collapse chevron indicator and gear settings button (with optional diagnostic export button).
+  - Interactive: Clicking anywhere on the thin line (or expand chevron) expands/collapses the full details panel.
+- **State Persistence:**
+  - Remembers collapsed/expanded state in `localStorage` under `cc_expanded` within `try/catch` guards (defaulting to collapsed).
+- **Expanded Panel View:**
+  - Unfolds dedicated Cache timer row, Session 5h & Weekly 7d bars (or the single neutral free-plan notice), and Settings drawer.
+
+### Over-Limit Color Bug Fix
+- **Root Cause & Fix:**
+  - Previously, at >100% context (>200,000 tokens, e.g. 231,255), the bar rendered dark grey due to `--cc-color-high` not being declared in Shadow DOM CSS rules and `.cc-high-utilization` utilizing `currentColor` from text-muted styles.
+  - Added `.cc-over-limit` class applied to the panel and row whenever context exceeds limit.
+  - Explicitly set `background-color: var(--cc-color-high, #ef4444) !important` for over-limit and high utilization.
+  - Fixed mono preset warning color to distinctly indicate limit violation.
+  - Progress bar width is strictly capped at `100%`.
+
+### Cache Timer Visibility & Status
+- **Root Cause & Fix:**
+  - Previously, `.cc-cache-pill` was assigned `.cc-hidden` by default and remained hidden whenever no cache was active (`cachedUntil <= now` or `null`), making the cache countdown invisible in standard operation.
+  - Redesigned into a persistent Cache row in the expanded panel.
+  - When no cache is active: Displays `Cache: —` with an empty SVG ring (never hidden).
+  - When assistant is generating: Displays `Cache: caching...`.
+  - When response completes: Intercepts timestamp, displays active countdown `M:SS remaining`, and smoothly updates circular SVG countdown ring every second.
+
+### Unit Tests
+- Created `tests/mount.test.js` (9/9 tests passing):
+  - Primary resolution of Level 6 composer card via `bg-surface-3` from Level 0 chat input.
+  - Fallback resolution via 6th ancestor when Tailwind classes change.
+  - Previous sibling inline insertion before Card in parent's children.
+  - Safe null handling when composer anchor is absent.
+  - Collapsed/expanded state persistence and exception tolerance.
+  - Over-limit capping (100%) and warning color class application.
+  - Cache timer status display (`—` when inactive).
+
+---
+
 ## [0.5.2] - 2026-10-17
 
 ### Context Token Counting & Loading State Fixes

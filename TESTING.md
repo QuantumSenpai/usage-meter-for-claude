@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.2)
+# Testing Checklist: Usage Meter for Claude (v0.5.3)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -12,7 +12,123 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-## Verification Test Matrix
+## Brave Manual Verification Matrix (v0.5.3)
+
+### 1. Inline Mount Directly Above Composer Card
+- **Preconditions:** Extension reloaded, open any chat on `https://claude.ai`.
+- **Steps:**
+  1. Inspect the composer input area at the bottom of the chat.
+  2. Locate `#cc-usage-meter-root`.
+- **Expected Results:**
+  - Panel sits **inline directly ABOVE the composer card** as its previous sibling in document flow.
+  - Zero fixed positioning, zero draggable handles, zero floating overlay.
+  - Same width as composer card, with an 8px gap (`margin-bottom: 8px`) above the card.
+  - No overlap with composer controls or message list.
+  - No layout shift or jump when scrolling the conversation history.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 2. Default View (One Thin Line) & Expand / Collapse Toggle
+- **Preconditions:** Open a chat with conversation messages.
+- **Steps:**
+  1. Observe the default appearance of the panel.
+  2. Click anywhere on the thin summary line (or click the chevron arrow).
+  3. Observe the expanded panel contents.
+  4. Click the thin line again to collapse.
+  5. Expand the panel, reload the page (`Cmd + Shift + R`), and observe state.
+- **Expected Results:**
+  - **Collapsed View (Default):** Displays as a single thin line (~26px high) containing: `Context` label, mini progress bar, token count (e.g. `~231k / 200k`), percent (`>100%`), gear icon, and chevron arrow.
+  - **Click to Expand:** Smoothly unfolds the details area showing Cache status, Session/Weekly usage (or single free-plan notice), and Settings drawer.
+  - **State Persistence:** Remembers collapsed/expanded state across page reloads via `localStorage.cc_expanded`.
+  - **Gear Icon:** Clicking the gear icon opens color settings (and automatically expands panel if currently collapsed) without collapsing.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 3. Composer Re-Render Survival (Chat Switch & New Chat)
+- **Preconditions:** In an active chat with the panel mounted.
+- **Steps:**
+  1. Click another chat in the left sidebar.
+  2. Click the Claude logo or "Start new chat" button (`/new`).
+  3. Navigate back to an existing chat.
+  4. Send a message and wait for streaming completion.
+- **Expected Results:**
+  - When Claude re-renders or replaces the composer card, the panel host re-mounts immediately above the new card.
+  - Exactly one `#cc-usage-meter-root` exists in DOM (no duplicate hosts).
+  - Context tokens reset to `— / 200k` while loading, then display the new conversation's count.
+  - Panel preserves current expanded/collapsed state and color settings.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 4. Over-Limit Color Bug Fix (>100% Context)
+- **Preconditions:** Open a long conversation thread exceeding 200k tokens (e.g. ~231k / 200k).
+- **Steps:**
+  1. Observe the progress bar and percentage display in the thin line (and expanded details).
+- **Expected Results:**
+  - Progress bar is colored with the **warning/high color** (red `#ef4444` on default preset; NOT grey).
+  - Percentage text displays `>100%` in warning color.
+  - Progress bar width is strictly capped at `100%` (fills the mini track completely without visual overflow).
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 5. Cache Timer: Countdown and Inactive State
+- **Preconditions:** Active chat with completed assistant responses.
+- **Steps:**
+  1. Expand the panel to view the Cache row.
+  2. When no cache is active (e.g. >5 minutes after assistant message, or on new chat): observe Cache row.
+  3. Send a message to Claude: observe Cache row during generation.
+  4. When assistant finishes streaming: observe Cache row immediately and over the next 60 seconds.
+- **Expected Results:**
+  - **Inactive Cache:** Displays `Cache: —` with an empty circular SVG ring. The cache row is **never hidden**.
+  - **During Generation:** Displays `Cache: caching...`.
+  - **After Completed Response:** Displays countdown `M:SS remaining` (e.g. `4:59 remaining`) and counts down each second.
+  - Circular SVG progress ring animates smoothly as time elapses.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 6. Light and Dark Theme & Narrow Window
+- **Preconditions:** In an active chat.
+- **Steps:**
+  1. Switch Claude between Light and Dark mode (via Claude user menu -> Theme or OS dark mode).
+  2. Resize browser window to narrow width (<600px).
+- **Expected Results:**
+  - **Dark Mode:** Dark background (`rgba(30, 29, 28, 0.95)`), light text, subtle dark-theme border.
+  - **Light Mode:** Light background (`rgba(255, 255, 255, 0.95)`), dark text, subtle light-theme border.
+  - **Narrow Window:** Panel shrinks proportionally with the composer card; no horizontal overflow or clipped text.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+### 7. Hard Page Reload
+- **Preconditions:** On `https://claude.ai/chat/<uuid>`.
+- **Steps:**
+  1. Press `Cmd + Shift + R` (macOS) or `Ctrl + Shift + R` (Windows).
+- **Expected Results:**
+  - Panel mounts immediately above the composer card as soon as input renders.
+  - Fetches and counts tokens correctly without flash of error.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
+
+## Regression Verification Matrix (v0.5.2 & earlier)
 
 ### 1. Context Row Loading State vs Real Count (v0.5.2 Bug Fix)
 - **Preconditions:** Extension loaded, in any existing chat or new chat.

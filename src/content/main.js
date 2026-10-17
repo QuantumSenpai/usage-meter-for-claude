@@ -5,7 +5,7 @@
 	if (CC.__started) return;
 	CC.__started = true;
 
-	const { isValidOrgId, normalizeUsagePayload } = CC.normalize;
+	const { isValidOrgId, normalizeUsagePayload } = CC.normalize || {};
 
 	// ==========================================
 	// Debug Logger (Sanitized Ring Buffer)
@@ -48,14 +48,15 @@
 		if (debugLogBuffer.length > CC.CONST.DEBUG_LOG_MAX_ENTRIES) {
 			debugLogBuffer.shift();
 		}
-		if (localStorage.getItem(CC.CONST.DEBUG_STORAGE_KEY) === 'true' || window.__CC_DEBUG) {
+		const isDebug = (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') || globalThis.__CC_DEBUG;
+		if (isDebug) {
 			console.log(`[UsageMeter:Debug] [${category}]`, entry.data);
 		}
 	}
 
-	window.__CC_COPY_DEBUG_LOG = () => {
+	globalThis.__CC_COPY_DEBUG_LOG = () => {
 		const formatted = JSON.stringify(debugLogBuffer, null, 2);
-		if (navigator.clipboard?.writeText) {
+		if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
 			navigator.clipboard.writeText(formatted).then(() => {
 				console.log('%c[Usage Meter] Debug log copied to clipboard! (Redacted)', 'color: #10b981; font-weight: bold;');
 			});
@@ -63,7 +64,9 @@
 		return formatted;
 	};
 
-	logDebug('init', { userAgent: navigator.userAgent });
+	if (typeof navigator !== 'undefined') {
+		logDebug('init', { userAgent: navigator.userAgent });
+	}
 
 	// ==========================================
 	// Org ID Retrieval (Task 1)
@@ -120,8 +123,47 @@
 	}
 
 	function getConversationId() {
+		if (typeof window === 'undefined') return null;
 		const match = window.location.pathname.match(/\/chat\/([^/?#]+)/);
 		return match ? match[1] : null;
+	}
+
+	function resolveComposerCard(doc = (typeof document !== 'undefined' ? document : null)) {
+		if (!doc) return null;
+		const anchor = doc.querySelector(CC.SELECTORS?.CHAT_INPUT || '[data-testid="chat-input"]');
+		if (!anchor) return null;
+
+		// Primary: closest composer card by class bg-surface-3
+		const cardByClass = anchor.closest('[class*="bg-surface-3"]');
+		if (cardByClass && cardByClass.parentElement) {
+			return { anchor, card: cardByClass };
+		}
+
+		// Fallback: exactly 6th ancestor of anchor (Level 6 in real evidence)
+		let cur = anchor;
+		for (let i = 0; i < 6; i++) {
+			cur = cur ? cur.parentElement : null;
+		}
+
+		if (cur && cur.parentElement && cur !== doc.body && cur !== doc.documentElement) {
+			return { anchor, card: cur };
+		}
+
+		return null;
+	}
+
+	CC.mount = { resolveComposerCard };
+
+	if (typeof window === 'undefined' || typeof document === 'undefined') {
+		if (typeof module !== 'undefined' && module.exports) {
+			module.exports = {
+				resolveComposerCard,
+				getOrgIdFromCookie,
+				resolveOrgId,
+				getConversationId
+			};
+		}
+		return;
 	}
 
 	// ==========================================
@@ -268,9 +310,11 @@
 
 	CC.bridge.on('cc:stream_completed', () => {
 		logDebug('stream_completed', {});
+		ensurePanelAttached();
 		// Immediate post-message usage and conversation refresh (allowed to bypass 30s throttle)
 		setTimeout(() => {
 			consecutiveFetchErrors = 0;
+			ensurePanelAttached();
 			refreshUsage({ force: true });
 			if (currentConversationId) {
 				refreshConversation();
@@ -317,41 +361,72 @@
 	});
 
 	// ==========================================
-	// Panel Mounting & Self-Healing (Task 4)
+	// Inline Panel Mounting & Self-Healing
 	// ==========================================
-	let lastObservedBody = null;
+	let lastObservedParent = null;
+
 	function ensurePanelAttached() {
-		const target = document.body || document.documentElement;
-		if (target && !target.contains(ui.rootElement)) {
-			ui.attach();
-			logDebug('panel_attached', {});
+		ui.initialize();
+
+		const target = resolveComposerCard();
+		if (!target || !target.card || !target.card.parentElement) {
+			logDebug('mount_target_not_found', { reason: 'No composer card found' });
+			return false;
 		}
-		if (document.body && document.body !== lastObservedBody) {
-			lastObservedBody = document.body;
+
+		const { card } = target;
+		const parent = card.parentElement;
+
+		// Guard against duplicate hosts (#cc-usage-meter-root)
+		const rootId = CC.DOM?.METER_ROOT_ID || 'cc-usage-meter-root';
+		const existing = document.querySelectorAll(`#${rootId}`);
+		for (const el of existing) {
+			if (el !== ui.rootElement && el.parentElement) {
+				el.parentElement.removeChild(el);
+			}
+		}
+
+		// If already mounted as previous sibling of card, keep state intact
+		if (ui.rootElement.parentElement === parent && ui.rootElement.nextElementSibling === card) {
+			return true;
+		}
+
+		// Normal document flow: insert directly above the composer card
+		parent.insertBefore(ui.rootElement, card);
+		logDebug('panel_mounted_inline', {});
+
+		// Attach observer to closest stable container (parent of card)
+		if (parent !== lastObservedParent) {
+			lastObservedParent = parent;
 			try {
-				healObserver.observe(document.body, { childList: true, subtree: false });
+				parentObserver.disconnect();
+				parentObserver.observe(parent, { childList: true });
 			} catch {
 				// ignore
 			}
 		}
+
+		return true;
+	}
+
+	let mountDebounce = null;
+	function throttledRemount() {
+		if (mountDebounce) clearTimeout(mountDebounce);
+		mountDebounce = setTimeout(() => {
+			ensurePanelAttached();
+		}, 100);
+	}
+
+	const parentObserver = new MutationObserver(throttledRemount);
+	const healObserver = new MutationObserver(throttledRemount);
+	if (document.body) {
+		healObserver.observe(document.body, { childList: true, subtree: true });
+	} else if (document.documentElement) {
+		healObserver.observe(document.documentElement, { childList: true, subtree: true });
 	}
 
 	// Mount immediately
 	ensurePanelAttached();
-
-	// Self-healing: lightweight MutationObserver on documentElement + interval check
-	let mountDebounce = null;
-	const healObserver = new MutationObserver(() => {
-		if (mountDebounce) clearTimeout(mountDebounce);
-		mountDebounce = setTimeout(() => {
-			ensurePanelAttached();
-		}, 300);
-	});
-	healObserver.observe(document.documentElement, { childList: true, subtree: false });
-	if (document.body) {
-		lastObservedBody = document.body;
-		healObserver.observe(document.body, { childList: true, subtree: false });
-	}
 
 	setInterval(ensurePanelAttached, 1000);
 
@@ -361,6 +436,7 @@
 	let lastKnownPath = window.location.pathname;
 
 	async function handleUrlChange() {
+		ensurePanelAttached();
 		const newConvId = getConversationId();
 		const convChanged = newConvId !== currentConversationId;
 		const pathChanged = window.location.pathname !== lastKnownPath;
@@ -445,4 +521,15 @@
 
 	// Initial trigger
 	handleUrlChange();
+
+	CC.mount = { resolveComposerCard };
+
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = {
+			resolveComposerCard,
+			getOrgIdFromCookie,
+			resolveOrgId,
+			getConversationId
+		};
+	}
 })();

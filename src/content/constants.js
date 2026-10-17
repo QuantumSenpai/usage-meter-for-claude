@@ -38,22 +38,32 @@
 			{ name: 'header-banner', selector: 'header, [role="banner"]' }
 		],
 
+		// Chat input and composer card selectors (Real evidence)
+		CHAT_INPUT: '[data-testid="chat-input"]',
+		COMPOSER_CARD_CLASS: 'bg-surface-3',
+
 		// Branch navigation buttons (Previous / Next response)
 		BRANCH_BUTTONS: 'button[aria-label="Previous"], button[aria-label="Next"], button[aria-label*="previous response" i], button[aria-label*="next response" i]'
 	});
 
 	CC.DOM = Object.freeze({
 		BRIDGE_SCRIPT_ID: 'cc-bridge-script',
-		METER_ROOT_ID: 'cc-usage-meter-root',
-		FALLBACK_CONTAINER_ID: 'cc-floating-meter-root'
+		METER_ROOT_ID: 'cc-usage-meter-root'
 	});
 
 	CC.CONST = Object.freeze({
 		CACHE_WINDOW_MS: 5 * 60 * 1000,
 		CONTEXT_LIMIT_TOKENS: 200000,
 		SLOW_USAGE_REFRESH_INTERVAL_MS: 5 * 60 * 1000,
-		FALLBACK_MOUNT_TIMEOUT_MS: 3000,
 		DEBUG_LOG_MAX_ENTRIES: 100,
 		DEBUG_STORAGE_KEY: 'cc_debug'
 	});
+
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = {
+			SELECTORS: CC.SELECTORS,
+			DOM: CC.DOM,
+			CONST: CC.CONST
+		};
+	}
 })();
