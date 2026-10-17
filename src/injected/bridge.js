@@ -194,10 +194,12 @@
 	}
 
 	// 2. Wrap Fetch
+	let originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
+
 	function wrapFetch(targetWindow = (typeof window !== 'undefined' ? window : null)) {
 		if (!targetWindow || !targetWindow.fetch) return;
 		if (targetWindow.__cc_fetch_wrapped__) return;
-		const originalFetch = targetWindow.fetch.bind(targetWindow);
+		originalFetch = targetWindow.fetch.bind(targetWindow);
 
 		targetWindow.fetch = async (...args) => {
 			let url = '';

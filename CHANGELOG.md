@@ -2,6 +2,12 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.4] - 2026-10-18
+
+### Fix ReferenceError on originalFetch in Bridge Message Handler
+- **Scope Fix:** Moved `originalFetch` declaration to module/IIFE scope so it is accessible to both `wrapFetch` and the `cc:request` message handlers for `/usage` and `/chat_conversations`.
+- **Integrity Tests:** Added VM sandbox integration tests verifying all `cc:*` message types (`cc:ping`, `cc:request` for `hash`, `usage`, `conversation`) execute without ReferenceError or TypeError.
+
 ## [0.6.3] - 2026-10-17
 
 ### URL-Independent SSE Interception & Redacted Diagnostics

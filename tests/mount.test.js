@@ -2153,8 +2153,280 @@ async function test(name, fn) {
 		assert.strictEqual(diagMessages.length, 0, 'No cc:diag messages must be posted when cc_debug is off');
 	});
 
+	// =========================================================================
+	// Version 0.6.4 Tests: Bridge Message Handling & Sandbox Integrity
+	// =========================================================================
+
+	// Test 45: VM Sandbox message listener integrity across all cc:* types
+	await test('VM Sandbox: all cc:* messages sent by content script are handled without ReferenceError/TypeError', async () => {
+		const vm = require('vm');
+		const fs = require('fs');
+		const path = require('path');
+
+		const bridgeCode = fs.readFileSync(path.join(__dirname, '../src/injected/bridge.js'), 'utf8');
+
+		const postedToWindow = [];
+		const listeners = { message: [] };
+
+		class MockXHR {
+			open() {}
+			send() {}
+			setRequestHeader() {}
+			addEventListener() {}
+		}
+		class MockEventSource {
+			constructor(url) { this.url = url; }
+		}
+		class MockWebSocket {
+			constructor(url) { this.url = url; }
+		}
+		class MockWorker {
+			constructor(url) { this.url = url; }
+		}
+		class MockSharedWorker {
+			constructor(url) { this.url = url; }
+		}
+
+		const mockStorage = {
+			getItem: () => 'true',
+			setItem: () => {}
+		};
+
+		const fakeFetch = async (input) => {
+			const url = typeof input === 'string' ? input : (input?.url || '');
+			if (url.includes('/usage')) {
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({
+						five_hour: { utilization: 0.25, resets_at: 1792265400 },
+						seven_day: { utilization: 0.1, resets_at: 1792713600 }
+					})
+				};
+			}
+			if (url.includes('/chat_conversations/')) {
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({
+						chat_messages: [{ id: '1', text: 'hi' }]
+					})
+				};
+			}
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({})
+			};
+		};
+
+		const sandboxWindow = {
+			addEventListener: (event, handler) => {
+				if (!listeners[event]) listeners[event] = [];
+				listeners[event].push(handler);
+			},
+			removeEventListener: (event, handler) => {
+				if (listeners[event]) {
+					listeners[event] = listeners[event].filter(h => h !== handler);
+				}
+			},
+			postMessage: (msg) => {
+				postedToWindow.push(msg);
+			},
+			location: {
+				origin: 'https://claude.ai',
+				pathname: '/chat'
+			},
+			fetch: fakeFetch,
+			XMLHttpRequest: MockXHR,
+			EventSource: MockEventSource,
+			WebSocket: MockWebSocket,
+			Worker: MockWorker,
+			SharedWorker: MockSharedWorker,
+			localStorage: mockStorage,
+			document: {
+				head: { appendChild: () => {} },
+				documentElement: { appendChild: () => {} },
+				getElementById: () => null,
+				addEventListener: () => {}
+			},
+			history: {
+				pushState: () => {},
+				replaceState: () => {}
+			},
+			crypto: {
+				subtle: {
+					digest: async () => new Uint8Array([0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04]).buffer
+				}
+			},
+			TextEncoder,
+			URL,
+			Request,
+			Date,
+			setTimeout,
+			clearTimeout,
+			console
+		};
+		sandboxWindow.window = sandboxWindow;
+		sandboxWindow.globalThis = sandboxWindow;
+
+		const context = vm.createContext(sandboxWindow);
+		vm.runInContext(bridgeCode, context);
+		const innerWin = vm.runInContext('window', context);
+
+		// Verify bridge announced readiness
+		const readyMsg = postedToWindow.find(m => m.type === 'cc:ready');
+		assert.ok(readyMsg, 'Bridge must announce cc:ready on load in VM sandbox');
+
+		async function dispatchMessageFromContentScript(msgData) {
+			const evt = { source: innerWin, data: msgData };
+			for (const handler of (listeners.message || [])) {
+				await handler(evt);
+			}
+		}
+
+		// 1. cc:ping -> cc:pong
+		postedToWindow.length = 0;
+		await dispatchMessageFromContentScript({ cc: 'ClaudeCounter', type: 'cc:ping' });
+		const pongMsg = postedToWindow.find(m => m.type === 'cc:pong');
+		assert.ok(pongMsg, 'cc:ping must receive cc:pong');
+		assert.strictEqual(pongMsg.payload?.ready, true);
+
+		// 2. cc:request (kind: 'hash') -> cc:response
+		postedToWindow.length = 0;
+		await dispatchMessageFromContentScript({
+			cc: 'ClaudeCounter',
+			type: 'cc:request',
+			requestId: 'req-hash-1',
+			kind: 'hash',
+			payload: { text: 'test text' }
+		});
+		const hashRes = postedToWindow.find(m => m.type === 'cc:response' && m.requestId === 'req-hash-1');
+		assert.ok(hashRes, 'kind: hash must receive cc:response');
+		assert.strictEqual(hashRes.ok, true);
+		assert.strictEqual(hashRes.payload?.hash, 'deadbeef01020304');
+
+		// 3. cc:request (kind: 'usage') -> cc:response
+		postedToWindow.length = 0;
+		await dispatchMessageFromContentScript({
+			cc: 'ClaudeCounter',
+			type: 'cc:request',
+			requestId: 'req-usage-1',
+			kind: 'usage',
+			payload: { orgId: '11111111-1111-1111-1111-111111111111' }
+		});
+		const usageRes = postedToWindow.find(m => m.type === 'cc:response' && m.requestId === 'req-usage-1');
+		assert.ok(usageRes, 'kind: usage must receive cc:response');
+		assert.strictEqual(usageRes.ok, true, 'Usage response must be ok: true');
+		assert.strictEqual(usageRes.payload?.five_hour?.utilization, 0.25);
+		assert.strictEqual(usageRes.error, null);
+		assert.strictEqual(JSON.stringify(usageRes).includes('originalFetch'), false, 'Response must never contain originalFetch error');
+
+		// 4. cc:request (kind: 'conversation') -> cc:conversation and cc:response
+		postedToWindow.length = 0;
+		await dispatchMessageFromContentScript({
+			cc: 'ClaudeCounter',
+			type: 'cc:request',
+			requestId: 'req-conv-1',
+			kind: 'conversation',
+			payload: { orgId: '11111111-1111-1111-1111-111111111111', conversationId: 'conv-999' }
+		});
+		const convEvent = postedToWindow.find(m => m.type === 'cc:conversation');
+		assert.ok(convEvent, 'kind: conversation must post cc:conversation event');
+		const convRes = postedToWindow.find(m => m.type === 'cc:response' && m.requestId === 'req-conv-1');
+		assert.ok(convRes, 'kind: conversation must receive cc:response');
+		assert.strictEqual(convRes.ok, true);
+		assert.strictEqual(convRes.error, null);
+		assert.strictEqual(JSON.stringify(convRes).includes('originalFetch'), false);
+
+		// 5. cc:request with unknown kind safely returns ok: false
+		postedToWindow.length = 0;
+		await dispatchMessageFromContentScript({
+			cc: 'ClaudeCounter',
+			type: 'cc:request',
+			requestId: 'req-unknown-1',
+			kind: 'unknown_kind',
+			payload: {}
+		});
+		const unknownRes = postedToWindow.find(m => m.type === 'cc:response' && m.requestId === 'req-unknown-1');
+		assert.ok(unknownRes, 'Unknown kind must receive cc:response');
+		assert.strictEqual(unknownRes.ok, false);
+	});
+
+	// Test 46: Specific test for cc:request /usage returning payload without "originalFetch"
+	await test('cc:request for /usage goes through real handler with fake fetch and returns cc:response without originalFetch error', async () => {
+		const vm = require('vm');
+		const fs = require('fs');
+		const path = require('path');
+
+		const bridgeCode = fs.readFileSync(path.join(__dirname, '../src/injected/bridge.js'), 'utf8');
+		const posted = [];
+		const listeners = [];
+
+		const expectedUsage = {
+			five_hour: { utilization: 0.15, resets_at: 1792265400 },
+			seven_day: { utilization: 0.05, resets_at: 1792713600 }
+		};
+
+		const win = {
+			addEventListener: (evt, fn) => { if (evt === 'message') listeners.push(fn); },
+			removeEventListener: () => {},
+			postMessage: (msg) => { posted.push(msg); },
+			location: { origin: 'https://claude.ai', pathname: '/chat' },
+			fetch: async (url) => {
+				assert.ok(url.includes('/api/organizations/11111111-1111-1111-1111-111111111111/usage'));
+				return {
+					ok: true,
+					status: 200,
+					json: async () => expectedUsage
+				};
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			document: { head: { appendChild: () => {} } },
+			history: { pushState: () => {}, replaceState: () => {} },
+			TextEncoder,
+			URL,
+			Request,
+			Date,
+			setTimeout,
+			clearTimeout,
+			console
+		};
+		win.window = win;
+		win.globalThis = win;
+
+		const ctx = vm.createContext(win);
+		vm.runInContext(bridgeCode, ctx);
+		const innerWin = vm.runInContext('window', ctx);
+
+		// Post cc:request for usage
+		const reqId = 'req-usage-exact';
+		const event = {
+			source: innerWin,
+			data: {
+				cc: 'ClaudeCounter',
+				type: 'cc:request',
+				requestId: reqId,
+				kind: 'usage',
+				payload: { orgId: '11111111-1111-1111-1111-111111111111' }
+			}
+		};
+
+		for (const listener of listeners) {
+			await listener(event);
+		}
+
+		const resp = posted.find(m => m.type === 'cc:response' && m.requestId === reqId);
+		assert.ok(resp, 'Must receive cc:response for usage request');
+		assert.strictEqual(resp.ok, true, 'Response must be ok');
+		assert.deepStrictEqual(resp.payload, expectedUsage, 'Response payload must match fetched usage');
+		assert.strictEqual(resp.error, null, 'Error must be null');
+		assert.strictEqual(JSON.stringify(resp).includes('originalFetch'), false, 'Response must not contain "originalFetch"');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();
+
 
 
