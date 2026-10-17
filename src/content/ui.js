@@ -295,6 +295,12 @@
 			font-weight: 600;
 			min-width: 32px;
 			text-align: right;
+			white-space: nowrap;
+		}
+
+		/* In collapsed thin line, hide the token estimate count so it shows: Context [bar] 62% used · 38% left */
+		.cc-panel:not(.cc-expanded) #cc-ctx-main {
+			display: none;
 		}
 
 		.cc-val-reset {
@@ -318,23 +324,28 @@
 			transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1), background-color 300ms ease;
 		}
 
-		/* Over-limit (Orange / Mid warning) */
-		.cc-over-limit .cc-bar-fill {
-			background-color: var(--cc-color-mid, #f59e0b) !important;
+		/* Context bar & pct colors by utilization tier */
+		.cc-ctx-low #cc-ctx-bar {
+			background-color: var(--cc-color-low, #10b981) !important;
+		}
+		.cc-ctx-low #cc-ctx-pct {
+			color: var(--cc-text-muted);
 		}
 
-		.cc-over-limit .cc-val-pct {
+		.cc-ctx-mid #cc-ctx-bar {
+			background-color: var(--cc-color-mid, #f59e0b) !important;
+		}
+		.cc-ctx-mid #cc-ctx-pct {
 			color: var(--cc-color-mid, #f59e0b) !important;
 			font-weight: 600;
 		}
 
-		/* Over-limit > 10% (Red / High warning) */
-		.cc-over-limit-10pct .cc-bar-fill {
+		.cc-ctx-high #cc-ctx-bar,
+		.cc-over-limit #cc-ctx-bar {
 			background-color: var(--cc-color-high, #ef4444) !important;
-			animation: cc-pulse 2s infinite ease-in-out;
 		}
-
-		.cc-over-limit-10pct .cc-val-pct {
+		.cc-ctx-high #cc-ctx-pct,
+		.cc-over-limit #cc-ctx-pct {
 			color: var(--cc-color-high, #ef4444) !important;
 			font-weight: 700;
 		}
@@ -674,9 +685,9 @@
 
 			panel.innerHTML = `
 				<!-- Thin summary line (Default View: always visible) -->
-				<div class="cc-summary-line" id="cc-summary-line" title="Click to expand/collapse Usage Meter">
-					<div class="cc-summary-left">
-						<span class="cc-label" title="Size of this chat vs. context window. Not your usage limit.">Context</span>
+				<div class="cc-summary-line" id="cc-summary-line" title="Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.">
+					<div class="cc-summary-left" title="Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.">
+						<span class="cc-label" id="cc-label-context" title="Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.">Context</span>
 						<div class="cc-bar-track cc-bar-track--mini" role="progressbar" aria-label="Context utilization" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
 							<div class="cc-bar-fill" id="cc-ctx-bar"></div>
 						</div>
@@ -1060,21 +1071,32 @@
 				return interpolateColor(this.settings.midColor, this.settings.highColor, (pct - 60) / 40);
 			};
 
-			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			const lowColor = this.settings.lowColor || PRESETS.default.low || '#10b981';
 			const midColor = this.settings.midColor || PRESETS.default.mid || '#f59e0b';
-			const warningColor = this.settings.highColor || PRESETS.default.high || '#ef4444';
+			const highColor = this.settings.highColor || PRESETS.default.high || '#ef4444';
 
 			if (this.dom.ctxBar) {
-				if (!this.metrics.context.isLoaded) {
-					this.dom.ctxBar.style.backgroundColor = this.settings.lowColor;
-				} else if (this.metrics.context.tokens > limit * 1.1) {
-					// Red only if user-set override is exceeded by >10%
-					this.dom.ctxBar.style.backgroundColor = warningColor;
-				} else if (this.metrics.context.tokens > limit) {
-					// Over-limit (<= 10% over): Mid/warning (orange) color
+				const pctUsed = this.metrics.context.pctUsed;
+				if (!this.metrics.context.isLoaded || typeof pctUsed !== 'number') {
+					this.dom.ctxBar.style.backgroundColor = lowColor;
+				} else if (pctUsed >= 90) {
+					this.dom.ctxBar.style.backgroundColor = highColor;
+				} else if (pctUsed >= 60) {
 					this.dom.ctxBar.style.backgroundColor = midColor;
-				} else if (typeof this.metrics.context.pct === 'number') {
-					this.dom.ctxBar.style.backgroundColor = getColor(this.metrics.context.pct);
+				} else {
+					this.dom.ctxBar.style.backgroundColor = lowColor;
+				}
+			}
+			if (this.dom.ctxPct) {
+				const pctUsed = this.metrics.context.pctUsed;
+				if (!this.metrics.context.isLoaded || typeof pctUsed !== 'number') {
+					this.dom.ctxPct.style.color = '';
+				} else if (pctUsed >= 90) {
+					this.dom.ctxPct.style.color = highColor;
+				} else if (pctUsed >= 60) {
+					this.dom.ctxPct.style.color = midColor;
+				} else {
+					this.dom.ctxPct.style.color = '';
 				}
 			}
 			if (this.dom.sessBar && typeof this.metrics.session.pct === 'number') {
@@ -1109,9 +1131,13 @@
 		setConversationLoading() {
 			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
 			const limitStr = limit >= 1000 ? `${Math.round(limit / 1000)}k` : String(limit);
+			const tooltip = 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.';
 			this.metrics.context = {
 				isLoaded: false,
 				tokens: null,
+				pctUsed: null,
+				pctLeft: null,
+				tier: 'low',
 				pct: null,
 				formatted: `— / ${limitStr}`
 			};
@@ -1120,16 +1146,19 @@
 			if (this.dom.ctxMain) {
 				this.dom.ctxMain.textContent = `— / ${limitStr}`;
 				this.dom.ctxPct.textContent = '—';
-				this.dom.ctxPct.title = '';
+				this.dom.ctxPct.title = tooltip;
 				this.dom.ctxBar.style.width = '0%';
-				this.dom.ctxBar.title = '';
+				this.dom.ctxBar.title = tooltip;
 				if (this.dom.ctxBar.parentElement) {
 					this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', '0');
-					this.dom.ctxBar.parentElement.title = '';
+					this.dom.ctxBar.parentElement.title = tooltip;
 				}
 				this.panel.classList.remove('cc-over-limit');
 				this.panel.classList.remove('cc-over-limit-10pct');
 				this.panel.classList.remove('cc-high-utilization');
+				this.panel.classList.remove('cc-ctx-mid');
+				this.panel.classList.remove('cc-ctx-high');
+				this.panel.classList.add('cc-ctx-low');
 			}
 
 			if (this.dom.cacheText) {
@@ -1159,25 +1188,33 @@
 					const limitStr = limitNum >= 1000 ? `${Math.round(limitNum / 1000)}k` : String(limitNum);
 					const fTok = CC.tokens?.formatTokens ? CC.tokens.formatTokens(tokens) : (tokens >= 1000 ? `~${Math.round(tokens / 1000)}k` : `~${tokens}`);
 					const isOver = tokens > limitNum;
-					const is10Pct = tokens > (limitNum * 1.1);
-					const rawPct = (tokens / limitNum) * 100;
+					const pctUsed = Math.round((tokens / limitNum) * 100);
+					const pctLeft = Math.max(0, 100 - pctUsed);
+					let tier = 'low';
+					if (pctUsed >= 90) tier = 'high';
+					else if (pctUsed >= 60) tier = 'mid';
 					return {
 						formatted: `${fTok} est. / ${limitStr}`,
-						percentText: isOver ? 'long chat' : (tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`),
-						barPercent: Math.max(0, Math.min(100, rawPct)),
+						percentText: isOver ? '100%+ used · 0% left' : `${pctUsed}% used · ${pctLeft}% left`,
+						barPercent: Math.max(0, Math.min(100, pctUsed)),
+						pctUsed,
+						pctLeft,
+						tier,
 						isOverLimit: isOver,
-						isExceeded10Pct: is10Pct,
-						tooltip: isOver ? 'Estimated size; limit may differ by model. This is not your plan usage limit.' : ''
+						tooltip: 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.'
 					};
 				})();
 
 			const cappedBarPercent = Math.max(0, Math.min(100, util.barPercent));
 			const isOverLimit = !!util.isOverLimit;
-			const isExceeded10Pct = !!util.isExceeded10Pct || (tokens > limit * 1.1);
+			const tier = util.tier || (util.pctUsed >= 90 ? 'high' : (util.pctUsed >= 60 ? 'mid' : 'low'));
 
 			this.metrics.context = {
 				isLoaded: true,
 				tokens,
+				pctUsed: util.pctUsed,
+				pctLeft: util.pctLeft,
+				tier,
 				pct: cappedBarPercent,
 				formatted: util.formatted
 			};
@@ -1190,13 +1227,16 @@
 				this.dom.ctxBar.style.width = `${cappedBarPercent}%`;
 				this.dom.ctxBar.title = util.tooltip || '';
 				if (this.dom.ctxBar.parentElement) {
-					this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', cappedBarPercent.toFixed(1));
+					this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', cappedBarPercent.toFixed(0));
 					this.dom.ctxBar.parentElement.title = util.tooltip || '';
 				}
 
 				this.panel.classList.toggle('cc-over-limit', isOverLimit);
-				this.panel.classList.toggle('cc-over-limit-10pct', isExceeded10Pct);
-				this.panel.classList.toggle('cc-high-utilization', isExceeded10Pct);
+				this.panel.classList.toggle('cc-ctx-low', tier === 'low');
+				this.panel.classList.toggle('cc-ctx-mid', tier === 'mid');
+				this.panel.classList.toggle('cc-ctx-high', tier === 'high');
+				this.panel.classList.remove('cc-over-limit-10pct');
+				this.panel.classList.toggle('cc-high-utilization', tier === 'high');
 			}
 
 			this.refreshBarColors();

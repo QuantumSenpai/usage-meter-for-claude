@@ -282,19 +282,21 @@ async function test(name, fn) {
 		assert.strictEqual(ui.isExpanded, true);
 	});
 
-	// Test 7: Over-limit color rules (orange "long chat" for <= 10% excess, red warning only for >10% excess)
-	await test('Over-limit: 218,000 / 200,000 shows orange midColor (#f59e0b), "long chat", and tooltip', () => {
-		const util = formatContextUtilization(218000, 200000);
-		assert.strictEqual(util.isOverLimit, true);
-		assert.strictEqual(util.isExceeded10Pct, false);
-		assert.strictEqual(util.percentText, 'long chat');
-		assert.strictEqual(util.barPercent, 100, 'Bar percentage must be strictly capped at 100%');
-		assert.strictEqual(util.formatted, '~218k est. / 200k');
+	// Test 7: Context row percentage used · left and tier colors (<60 low, 60 to <90 mid, >=90 high)
+	await test('Utilization: 124,000 / 200,000 (62%) shows "62% used · 38% left" and orange midColor (#f59e0b)', () => {
+		const util = formatContextUtilization(124000, 200000);
+		assert.strictEqual(util.isOverLimit, false);
+		assert.strictEqual(util.percentText, '62% used · 38% left');
+		assert.strictEqual(util.pctUsed, 62);
+		assert.strictEqual(util.pctLeft, 38);
+		assert.strictEqual(util.tier, 'mid');
+		assert.strictEqual(util.barPercent, 62);
+		assert.strictEqual(util.formatted, '~124k est. / 200k');
 
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '', title: '' },
+			ctxPct: { textContent: '', title: '', style: {} },
 			ctxBar: {
 				style: {},
 				title: '',
@@ -314,29 +316,28 @@ async function test(name, fn) {
 			style: { setProperty: () => {} }
 		};
 
-		ui.setConversationMetrics({ totalTokens: 218000, isLoaded: true });
+		ui.setConversationMetrics({ totalTokens: 124000, isLoaded: true });
 
-		assert.strictEqual(ui.metrics.context.pct, 100);
-		assert.strictEqual(ui.dom.ctxBar.style.width, '100%');
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true, 'Panel must have cc-over-limit class');
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), false, 'Panel must NOT have cc-over-limit-10pct class');
-		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#f59e0b', 'Over-limit <=10% bar must use orange midColor (#f59e0b)');
-		assert.strictEqual(ui.dom.ctxPct.textContent, 'long chat');
-		assert.strictEqual(ui.dom.ctxPct.title, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
+		assert.strictEqual(ui.metrics.context.pctUsed, 62);
+		assert.strictEqual(ui.metrics.context.pctLeft, 38);
+		assert.strictEqual(ui.dom.ctxBar.style.width, '62%');
+		assert.strictEqual(ui.panel.classList.contains('cc-ctx-mid'), true, 'Panel must have cc-ctx-mid class');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#f59e0b', '62% must use orange midColor (#f59e0b)');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '62% used · 38% left');
+		assert.strictEqual(ui.dom.ctxPct.title, 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.');
 	});
 
-	await test('Over-limit: 231,255 / 200,000 exceeds by >10% and uses red warning color (#ef4444)', () => {
+	await test('Over-limit: 231,255 / 200,000 (>100%) shows "100%+ used · 0% left", bar capped at 100%, and red highColor (#ef4444)', () => {
 		const util = formatContextUtilization(231255, 200000);
 		assert.strictEqual(util.isOverLimit, true);
-		assert.strictEqual(util.isExceeded10Pct, true);
-		assert.strictEqual(util.percentText, 'long chat');
+		assert.strictEqual(util.percentText, '100%+ used · 0% left');
 		assert.strictEqual(util.barPercent, 100, 'Bar percentage must be strictly capped at 100%');
 		assert.strictEqual(util.formatted, '~231k est. / 200k');
 
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '', title: '' },
+			ctxPct: { textContent: '', title: '', style: {} },
 			ctxBar: {
 				style: {},
 				title: '',
@@ -361,8 +362,9 @@ async function test(name, fn) {
 		assert.strictEqual(ui.metrics.context.pct, 100);
 		assert.strictEqual(ui.dom.ctxBar.style.width, '100%');
 		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true, 'Panel must have cc-over-limit class');
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), true, 'Panel must have cc-over-limit-10pct class');
-		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#ef4444', 'Over-limit >10% bar must use red warning color (#ef4444)');
+		assert.strictEqual(ui.panel.classList.contains('cc-ctx-high'), true, 'Panel must have cc-ctx-high class');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#ef4444', 'Over-limit bar must use red warning color (#ef4444)');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '100%+ used · 0% left');
 	});
 
 	// Test 8: User override for context window limit
@@ -370,7 +372,7 @@ async function test(name, fn) {
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '', title: '' },
+			ctxPct: { textContent: '', title: '', style: {} },
 			ctxBar: {
 				style: {},
 				title: '',
@@ -390,35 +392,38 @@ async function test(name, fn) {
 			style: { setProperty: () => {} }
 		};
 
-		// Override to 250,000 tokens
+		// Override to 250,000 tokens: 125,000 is 50%
 		ui.settings.contextWindow = 250000;
-		ui.setConversationMetrics({ totalTokens: 231255, isLoaded: true });
+		ui.setConversationMetrics({ totalTokens: 125000, isLoaded: true });
 
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), false, '231,255 is under 250k override');
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), false);
+		assert.strictEqual(ui.panel.classList.contains('cc-ctx-low'), true);
+		assert.strictEqual(ui.dom.ctxMain.textContent, '~125k est. / 250k');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '50% used · 50% left');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#10b981');
+
+		// 231,255 / 250,000 is 93% (high color)
+		ui.setConversationMetrics({ totalTokens: 231255, isLoaded: true });
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), false);
+		assert.strictEqual(ui.panel.classList.contains('cc-ctx-high'), true);
 		assert.strictEqual(ui.dom.ctxMain.textContent, '~231k est. / 250k');
-		assert.strictEqual(ui.dom.ctxPct.textContent, '92.5%');
-
-		// Override to 220,000 tokens: 231,255 is over 220,000 but <= 242,000 (within 10%)
-		ui.settings.contextWindow = 220000;
-		ui.setConversationMetrics({ totalTokens: 231255, isLoaded: true });
-
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true);
-		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), false, 'Within 10% of override');
-		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#f59e0b', 'Must be orange for <=10% excess of override');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '93% used · 7% left');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#ef4444');
 	});
 
 	// Test 9: Normal token usage does not trigger over-limit warning color
-	await test('Normal: 50,000 / 200,000 utilization formats 25% and does not trigger over-limit class', () => {
+	await test('Normal: 50,000 / 200,000 utilization formats 25% used · 75% left with lowColor', () => {
 		const util = formatContextUtilization(50000, 200000);
 		assert.strictEqual(util.isOverLimit, false);
-		assert.strictEqual(util.percentText, '25.0%');
+		assert.strictEqual(util.percentText, '25% used · 75% left');
 		assert.strictEqual(util.barPercent, 25);
+		assert.strictEqual(util.tier, 'low');
 		assert.strictEqual(util.formatted, '~50k est. / 200k');
 
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '', title: '' },
+			ctxPct: { textContent: '', title: '', style: {} },
 			ctxBar: {
 				style: {},
 				title: '',
@@ -443,9 +448,11 @@ async function test(name, fn) {
 		assert.strictEqual(ui.metrics.context.pct, 25);
 		assert.strictEqual(ui.dom.ctxBar.style.width, '25%');
 		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), false);
+		assert.strictEqual(ui.panel.classList.contains('cc-ctx-low'), true);
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#10b981');
 	});
 
-	// Test 9: Cache timer shows "—" when no cache is active
+	// Test 10: Cache timer shows "—" when no cache is active
 	await test('Cache Timer: displays "—" when inactive, not hidden', () => {
 		const ui = new CounterUI();
 		ui.dom = {
@@ -467,14 +474,20 @@ async function test(name, fn) {
 		assert.strictEqual(ui.dom.cacheText.textContent, 'caching...', 'Must show caching when pending');
 	});
 
-	// Test 11: Context label tooltip and Settings Drawer override input in source & settings defaults
+	// Test 11: Context label tooltip, collapsed hiding rule, and Settings Drawer override input
 	await test('UI: Context label has tooltip, drawer has number input, and settings default to 200,000', () => {
 		const uiSrc = fs.readFileSync(path.join(__dirname, '../src/content/ui.js'), 'utf8');
 
-		// Tooltip on Context label
+		// Tooltip on Context row & label
 		assert.ok(
-			uiSrc.includes('title="Size of this chat vs. context window. Not your usage limit.">Context</span>'),
-			'Context label must have specified tooltip'
+			uiSrc.includes('title="Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings."'),
+			'Context label and row must have specified tooltip'
+		);
+
+		// Collapsed view hides #cc-ctx-main so only "Context [bar] 62% used · 38% left" shows
+		assert.ok(
+			uiSrc.includes('.cc-panel:not(.cc-expanded) #cc-ctx-main'),
+			'Must include rule hiding #cc-ctx-main when collapsed'
 		);
 
 		// Number input in drawer

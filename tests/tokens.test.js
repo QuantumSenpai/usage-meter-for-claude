@@ -136,33 +136,96 @@ async function test(name, fn) {
 		assert.strictEqual(zeroMetrics.totalTokens, 0);
 		assert.strictEqual(zeroMetrics.trunkMessageCount, 0);
 
+		// Empty chat: 0% used · 100% left
 		const formatZero = formatContextUtilization(zeroMetrics.totalTokens);
 		assert.strictEqual(formatZero.formatted, '~0 est. / 200k');
-		assert.strictEqual(formatZero.percentText, '0%');
+		assert.strictEqual(formatZero.percentText, '0% used · 100% left');
 		assert.strictEqual(formatZero.barPercent, 0);
+		assert.strictEqual(formatZero.pctUsed, 0);
+		assert.strictEqual(formatZero.pctLeft, 100);
+		assert.strictEqual(formatZero.tier, 'low');
 		assert.strictEqual(formatZero.isOverLimit, false);
 	});
 
-	// Test 7: Over-limit formatting (real cases: ~218k and 231,255)
-	await test('Over-limit: ~218k tokens produces ~218k est. / 200k, "long chat", isExceeded10Pct=false, and tooltip', () => {
-		const chat218k = formatContextUtilization(218000);
-		assert.strictEqual(chat218k.formatted, '~218k est. / 200k');
-		assert.strictEqual(chat218k.percentText, 'long chat');
-		assert.strictEqual(chat218k.barPercent, 100, 'Bar width must be capped at 100%');
-		assert.strictEqual(chat218k.isOverLimit, true);
-		assert.strictEqual(chat218k.isExceeded10Pct, false, '218k is within 10% of 200k (<= 220k)');
-		assert.strictEqual(chat218k.tooltip, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
+	// Test 7: 0%, 50%, 59/60 boundary, 89/90 boundary, 100%, 115% utilization and tier colors
+	await test('Utilization: 0% shows "0% used · 100% left" and low tier', () => {
+		const u0 = formatContextUtilization(0);
+		assert.strictEqual(u0.percentText, '0% used · 100% left');
+		assert.strictEqual(u0.barPercent, 0);
+		assert.strictEqual(u0.pctUsed, 0);
+		assert.strictEqual(u0.pctLeft, 100);
+		assert.strictEqual(u0.tier, 'low');
+		assert.strictEqual(u0.isOverLimit, false);
 	});
 
-	await test('Over-limit: 231,255 tokens produces ~231k est. / 200k, "long chat", isExceeded10Pct=true, and tooltip', () => {
-		const overLimit = formatContextUtilization(231255);
+	await test('Utilization: 50% (100,000 / 200,000) shows "50% used · 50% left" and low tier (<60)', () => {
+		const u50 = formatContextUtilization(100000);
+		assert.strictEqual(u50.formatted, '~100k est. / 200k');
+		assert.strictEqual(u50.percentText, '50% used · 50% left');
+		assert.strictEqual(u50.barPercent, 50);
+		assert.strictEqual(u50.pctUsed, 50);
+		assert.strictEqual(u50.pctLeft, 50);
+		assert.strictEqual(u50.tier, 'low');
+		assert.strictEqual(u50.isOverLimit, false);
+	});
 
-		assert.strictEqual(overLimit.formatted, '~231k est. / 200k');
-		assert.strictEqual(overLimit.percentText, 'long chat');
-		assert.strictEqual(overLimit.barPercent, 100, 'Bar width must be capped at 100%');
-		assert.strictEqual(overLimit.isOverLimit, true);
-		assert.strictEqual(overLimit.isExceeded10Pct, true, '231,255 exceeds 200k by >10% (> 220k)');
-		assert.strictEqual(overLimit.tooltip, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
+	await test('Utilization: 59/60 boundary (59% is low tier, 60% is mid tier)', () => {
+		// 59% of 200,000 = 118,000
+		const u59 = formatContextUtilization(118000);
+		assert.strictEqual(u59.percentText, '59% used · 41% left');
+		assert.strictEqual(u59.barPercent, 59);
+		assert.strictEqual(u59.pctUsed, 59);
+		assert.strictEqual(u59.pctLeft, 41);
+		assert.strictEqual(u59.tier, 'low', '59% must be low tier (<60)');
+
+		// 60% of 200,000 = 120,000
+		const u60 = formatContextUtilization(120000);
+		assert.strictEqual(u60.percentText, '60% used · 40% left');
+		assert.strictEqual(u60.barPercent, 60);
+		assert.strictEqual(u60.pctUsed, 60);
+		assert.strictEqual(u60.pctLeft, 40);
+		assert.strictEqual(u60.tier, 'mid', '60% must be mid tier (60 to <90)');
+	});
+
+	await test('Utilization: 89/90 boundary (89% is mid tier, 90% is high tier)', () => {
+		// 89% of 200,000 = 178,000
+		const u89 = formatContextUtilization(178000);
+		assert.strictEqual(u89.percentText, '89% used · 11% left');
+		assert.strictEqual(u89.barPercent, 89);
+		assert.strictEqual(u89.pctUsed, 89);
+		assert.strictEqual(u89.pctLeft, 11);
+		assert.strictEqual(u89.tier, 'mid', '89% must be mid tier (60 to <90)');
+
+		// 90% of 200,000 = 180,000
+		const u90 = formatContextUtilization(180000);
+		assert.strictEqual(u90.percentText, '90% used · 10% left');
+		assert.strictEqual(u90.barPercent, 90);
+		assert.strictEqual(u90.pctUsed, 90);
+		assert.strictEqual(u90.pctLeft, 10);
+		assert.strictEqual(u90.tier, 'high', '90% must be high tier (>=90)');
+	});
+
+	await test('Utilization: 100% (200,000 / 200,000) shows "100% used · 0% left" and high tier', () => {
+		const u100 = formatContextUtilization(200000);
+		assert.strictEqual(u100.formatted, '~200k est. / 200k');
+		assert.strictEqual(u100.percentText, '100% used · 0% left');
+		assert.strictEqual(u100.barPercent, 100);
+		assert.strictEqual(u100.pctUsed, 100);
+		assert.strictEqual(u100.pctLeft, 0);
+		assert.strictEqual(u100.tier, 'high');
+		assert.strictEqual(u100.isOverLimit, false);
+	});
+
+	await test('Utilization: 115% (230,000 / 200,000) shows "100%+ used · 0% left", bar capped at 100%, and high tier', () => {
+		const u115 = formatContextUtilization(230000);
+		assert.strictEqual(u115.formatted, '~230k est. / 200k');
+		assert.strictEqual(u115.percentText, '100%+ used · 0% left');
+		assert.strictEqual(u115.barPercent, 100, 'Bar percentage must be strictly capped at 100%');
+		assert.strictEqual(u115.pctUsed, 115);
+		assert.strictEqual(u115.pctLeft, 0);
+		assert.strictEqual(u115.tier, 'high');
+		assert.strictEqual(u115.isOverLimit, true);
+		assert.strictEqual(u115.tooltip, 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.');
 	});
 
 	// Test 8: Consistent compact (k) formatting across scales
@@ -180,30 +243,37 @@ async function test(name, fn) {
 		assert.strictEqual(formatTokens(NaN), '—');
 	});
 
-	// Test 9: Context utilization percentage and bar widths for normal ranges
-	await test('Utilization: calculates accurate percentages within normal range with estimate label', () => {
-		const half = formatContextUtilization(100000);
-		assert.strictEqual(half.formatted, '~100k est. / 200k');
-		assert.strictEqual(half.percentText, '50.0%');
-		assert.strictEqual(half.barPercent, 50);
-		assert.strictEqual(half.isOverLimit, false);
-		assert.strictEqual(half.isExceeded10Pct, false);
+	// Test 9: Loading state formatting
+	await test('Loading State: null or undefined returns "— / 200k" and "—"', () => {
+		const loadingNull = formatContextUtilization(null);
+		assert.strictEqual(loadingNull.formatted, '— / 200k');
+		assert.strictEqual(loadingNull.percentText, '—');
+		assert.strictEqual(loadingNull.barPercent, 0);
+		assert.strictEqual(loadingNull.pctUsed, null);
 
-		const small = formatContextUtilization(2000);
-		assert.strictEqual(small.formatted, '~2k est. / 200k');
-		assert.strictEqual(small.percentText, '1.0%');
-		assert.strictEqual(small.barPercent, 1);
-		assert.strictEqual(small.isOverLimit, false);
-		assert.strictEqual(small.isExceeded10Pct, false);
+		const loadingUndef = formatContextUtilization(undefined);
+		assert.strictEqual(loadingUndef.formatted, '— / 200k');
+		assert.strictEqual(loadingUndef.percentText, '—');
+		assert.strictEqual(loadingUndef.barPercent, 0);
+		assert.strictEqual(loadingUndef.pctUsed, null);
 	});
 
 	// Test 10: Custom context window override
 	await test('Override: respects custom limit (e.g. 250,000)', () => {
-		const overridden = formatContextUtilization(231255, 250000);
-		assert.strictEqual(overridden.formatted, '~231k est. / 250k');
-		assert.strictEqual(overridden.isOverLimit, false, '231,255 is under 250,000');
-		assert.strictEqual(overridden.percentText, '92.5%');
-		assert.strictEqual(Math.round(overridden.barPercent), 93);
+		const overridden = formatContextUtilization(125000, 250000);
+		assert.strictEqual(overridden.formatted, '~125k est. / 250k');
+		assert.strictEqual(overridden.percentText, '50% used · 50% left');
+		assert.strictEqual(overridden.pctUsed, 50);
+		assert.strictEqual(overridden.tier, 'low');
+		assert.strictEqual(overridden.isOverLimit, false);
+
+		const overLimit = formatContextUtilization(275000, 250000);
+		assert.strictEqual(overLimit.formatted, '~275k est. / 250k');
+		assert.strictEqual(overLimit.percentText, '100%+ used · 0% left');
+		assert.strictEqual(overLimit.pctUsed, 110);
+		assert.strictEqual(overLimit.barPercent, 100);
+		assert.strictEqual(overLimit.tier, 'high');
+		assert.strictEqual(overLimit.isOverLimit, true);
 	});
 
 	// Test 11: CONTEXT_WINDOW_TOKENS named constant

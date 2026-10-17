@@ -250,6 +250,8 @@
 		return `~${tokens}`;
 	}
 
+	const CONTEXT_ROW_TOOLTIP = 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.';
+
 	function formatContextUtilization(tokens, limit = (CC.CONST?.CONTEXT_WINDOW_TOKENS || CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000)) {
 		const limitNum = (typeof limit === 'number' && !isNaN(limit) && limit > 0) ? limit : 200000;
 		const limitStr = limitNum >= 1000 ? `${Math.round(limitNum / 1000)}k` : String(limitNum);
@@ -259,43 +261,47 @@
 				formatted: `— / ${limitStr}`,
 				percentText: '—',
 				barPercent: 0,
+				pctUsed: null,
+				pctLeft: null,
+				tier: 'low',
 				isOverLimit: false,
-				isExceeded10Pct: false,
-				tooltip: ''
+				tooltip: CONTEXT_ROW_TOOLTIP
 			};
 		}
 
 		const formattedTokens = formatTokens(tokens);
 		const formatted = `${formattedTokens} est. / ${limitStr}`;
+		const isOverLimit = tokens > limitNum;
+		const pctUsed = Math.round((tokens / limitNum) * 100);
+		const pctLeft = Math.max(0, 100 - pctUsed);
+		const barPercent = Math.max(0, Math.min(100, pctUsed));
 
-		if (tokens > limitNum) {
-			const isExceeded10Pct = tokens > (limitNum * 1.1);
-			return {
-				formatted,
-				percentText: 'long chat',
-				barPercent: 100,
-				isOverLimit: true,
-				isExceeded10Pct,
-				tooltip: 'Estimated size; limit may differ by model. This is not your plan usage limit.'
-			};
+		let tier = 'low';
+		if (pctUsed >= 90) {
+			tier = 'high';
+		} else if (pctUsed >= 60) {
+			tier = 'mid';
 		}
 
-		const rawPct = (tokens / limitNum) * 100;
-		const barPercent = Math.max(0, Math.min(100, rawPct));
-		const percentText = tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`;
+		const percentText = isOverLimit
+			? '100%+ used · 0% left'
+			: `${pctUsed}% used · ${pctLeft}% left`;
 
 		return {
 			formatted,
 			percentText,
 			barPercent,
-			isOverLimit: false,
-			isExceeded10Pct: false,
-			tooltip: ''
+			pctUsed,
+			pctLeft,
+			tier,
+			isOverLimit,
+			tooltip: CONTEXT_ROW_TOOLTIP
 		};
 	}
 
 	const exp = {
 		ROOT_MESSAGE_ID,
+		CONTEXT_ROW_TOOLTIP,
 		countTokens,
 		buildTrunk,
 		isCountableContentItem,

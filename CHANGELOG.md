@@ -2,6 +2,30 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.5] - 2026-10-17
+
+### Context Percentage Used & Left, Tier Colors & Row Tooltip
+- **Percentage Used and Left Display:**
+  - Collapsed thin line format: `Context  [bar]  62% used · 38% left`.
+  - Expanded view also displays the token estimate: `~124k est. / 200k` alongside percentage.
+  - Calculated as `Percent = round(tokens / contextWindow * 100)`.
+  - Genuinely empty chat displays `0% used · 100% left`.
+  - Loading state remains `— / 200k` and `—`.
+- **Colors by Percent Used:**
+  - `< 60%`: low color (`var(--cc-color-low, #10b981)`).
+  - `60% to < 90%`: mid/orange color (`var(--cc-color-mid, #f59e0b)`).
+  - `>= 90%`: high/red warning color (`var(--cc-color-high, #ef4444)`).
+  - Removed the old "long chat" text and former "exceeds by 10%" rule in favor of these clear utilization tiers.
+- **Over 100% Handling:**
+  - Bar width is capped at 100%.
+  - Text displays `100%+ used · 0% left`.
+  - High warning color (red).
+  - Token estimate remains visible in expanded view (e.g. `~231k est. / 200k`).
+- **Context Row Tooltip:**
+  - Tooltip on row, label, bar, and percentage: `"Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings."`.
+
+---
+
 ## [0.5.4] - 2026-10-17
 
 ### Context Limit Constant, Override Setting & Estimate Labeling

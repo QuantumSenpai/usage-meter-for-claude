@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.4)
+# Testing Checklist: Usage Meter for Claude (v0.5.5)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -12,31 +12,40 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-## Brave Manual Verification Matrix (v0.5.4)
+## Brave Manual Verification Matrix (v0.5.5)
 
-### 0. Context Window Override, Estimate Label & Over-Limit States (v0.5.4)
+### 0. Context Percentage Used & Left, Tier Colors, and Row Tooltip (v0.5.5)
 - **Preconditions:** Extension reloaded, open any chat on `https://claude.ai`.
 - **Steps:**
-  1. **Estimate Label:** Observe token count in the summary line.
-     - *Expected:* Displays with estimate format, e.g. `~218k est. / 200k` or `~50k est. / 200k` (never plain `~218k / 200k`).
-  2. **Context Label Tooltip:** Hover the cursor over the "Context" label.
-     - *Expected:* Displays tooltip: `"Size of this chat vs. context window. Not your usage limit."`.
-  3. **Context Window Override Setting:**
-     - Click the gear icon to open the Settings Drawer.
-     - Locate the **"Context Window"** number input (defaults to `200000`).
-     - Change value to `250000`.
-     - *Expected:* Immediately re-renders the context meter with `/ 250k` denominator. Saved to `localStorage.cc_settings` within `try/catch`.
-     - Click "Reset Defaults".
-     - *Expected:* Reverts to `200000` (denominator `/ 200k`).
-  4. **Over-Limit Behavior (<= 10% Excess):**
-     - In a chat with ~205k-219k tokens (or lower the override input so tokens are 1-10% above limit):
-     - *Expected:* Text shows **"long chat"** (never `>100%`).
-     - Progress bar is full (100% width) in **MID/warning orange** color (`#f59e0b`), NOT red.
-     - Hovering over "long chat" or the bar shows tooltip: `"Estimated size; limit may differ by model. This is not your plan usage limit."`.
-  5. **Over-Limit Behavior (> 10% Excess):**
-     - In a chat exceeding the limit by >10% (e.g. 231k tokens with 200k default, or set override below 90% of chat tokens):
-     - *Expected:* Text shows **"long chat"**.
-     - Progress bar is full in **RED warning** color (`#ef4444`).
+  1. **Collapsed Thin Line Format:**
+     - Observe the collapsed summary line.
+     - *Expected:* Displays in the format `Context  [bar]  62% used · 38% left`.
+     - The estimate label (`~124k est. / 200k`) is hidden in the collapsed state.
+  2. **Expanded View Format:**
+     - Click the chevron to expand the drawer.
+     - *Expected:* Both the estimate (`~124k est. / 200k`) and percentages (`62% used · 38% left`) are clearly visible.
+  3. **Tier Colors by Percent Used:**
+     - In chats of varying lengths (or adjust the context window setting to simulate):
+       - `< 60%` used: Progress bar uses **LOW color** (emerald green `#10b981`).
+       - `60% to < 90%` used: Progress bar and percentage text use **MID color** (amber orange `#f59e0b`).
+       - `>= 90%` used: Progress bar and percentage text use **HIGH color** (crimson red `#ef4444`).
+       - Note: Old "long chat" label and old "exceeds by 10%" rule are completely removed.
+  4. **Over 100% Context Window:**
+     - In a chat exceeding the context window (e.g. 231k tokens with 200k limit, or override limit to 100000):
+     - *Expected:*
+       - Bar is capped at 100% width.
+       - Percentage text displays: `"100%+ used · 0% left"`.
+       - Color is **HIGH color** (red `#ef4444`).
+       - Expanded view displays real estimate (e.g. `~231k est. / 200k`).
+  5. **Empty Chat vs. Loading State:**
+     - Before conversation metrics arrive: Displays loading state `"— / 200k"` and `"—"`.
+     - In a genuinely empty new chat (0 tokens): Displays `"0% used · 100% left"`.
+  6. **Row Tooltip:**
+     - Hover over the Context row / label / bar / percentage text.
+     - *Expected:* Displays tooltip: `"Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings."`
+  7. **Context Window Override Setting:**
+     - Open Settings drawer (gear icon), adjust Context Window (e.g. 250000).
+     - *Expected:* Immediately re-computes `Percent = round(tokens / contextWindow * 100)`, updates percentage used/left and tier colors, and updates denominator to `/ 250k`.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
