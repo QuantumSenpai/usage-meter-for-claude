@@ -2,6 +2,39 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.0] - 2026-10-17
+
+### Rebuilt Panel for Plan Usage Limits (Session & Weekly), Local Storage Persistence & Cleanup
+- **Rebuilt UI for Plan Usage Limits Only:**
+  - Panel rebuilt to display ONLY plan usage limits: **Session (5h)** and **Weekly (7d)** in clean, aligned rows.
+  - Each row displays: window label, progress bar (capped at 100%), `"X% used · Y% left"`, and reset countdown.
+  - Tooltip on percentage text explains: `"Derived: 100% minus used"`.
+  - Session countdown displays `"resets in Xh Ym"` (or `"<1m"`).
+  - Weekly countdown displays `"resets in Xd Yh"` plus local clock time/date in tooltip (e.g. `"Mon 5:30 AM"`) formatted via browser's `Intl.DateTimeFormat`.
+  - Tier colors based on percent used: `< 60%` low color, `60% <= pct < 90%` mid color, `>= 90%` high color.
+  - Smooth bar width transition (~300ms), disabled under `@media (prefers-reduced-motion: reduce)`.
+  - Narrow layout support: adapts smoothly below 600px without horizontal overflow.
+- **Default Hidden Context & Cache Rows:**
+  - Context and Cache rows hidden by default from the main panel.
+  - Context Window override input hidden by default from the settings drawer.
+  - Added checkboxes in Settings Drawer to toggle Context and Cache rows back on.
+  - One-time migration (`v060_migrated: true`) hides Context and Cache for existing user settings while preserving custom presets, colors, and opacity.
+  - While Context and Cache are hidden, `/chat_conversations` fetch and background tokenization are skipped completely, saving network bandwidth and CPU. Resumes immediately when toggled on.
+- **Per-Org Persistence & Multi-Org Isolation:**
+  - Saves last known usage windows to `localStorage` under `cc_last_limit:<orgId>` with `capturedAt`.
+  - Loads persisted data on startup so usage bars show before the first message.
+  - Tooltip on rows shows `"As of your last message at HH:MM"`.
+  - If `now >= resets_at`, window displays `" — "` and `"Window reset, send a message to update"`.
+  - Empty state with no data and nothing persisted displays `" — "` and `"Updates after your next message"`.
+  - Strict multi-org isolation: switching organizations clears previous org's in-memory data and loads only the active org's key.
+- **Diagnostics & Cross-Checking:**
+  - Added debug log `message_limit_received` (status strings + numbers only, routed through redaction).
+  - Cross-checks Session utilization against `resolved.limit.percent`: if differing by > 1, uses `resolved.limit.percent` and logs `limit_percent_mismatch`.
+- **Automated Tests:**
+  - Added tests in `tests/mount.test.js` exercising real bridge event stream handler with fake stream and verified capture fixture, org isolation, rollover state, settings migration, and conversation fetch skipping.
+
+---
+
 ## [0.5.8] - 2026-10-17
 
 ### Diagnostic Logging for Free Account SSE Streams & Usage Shapes

@@ -84,6 +84,83 @@
 	let currentOrgId = null;
 	let orgIdSource = null;
 
+	function extractStatusAndNumbers(obj, depth = 0) {
+		if (!obj || typeof obj !== 'object' || depth > 4) return null;
+		const out = {};
+		for (const [k, v] of Object.entries(obj)) {
+			if (typeof v === 'number' && !isNaN(v)) {
+				out[k] = v;
+			} else if (typeof v === 'string') {
+				const keyLower = k.toLowerCase();
+				if (keyLower === 'status' || keyLower === 'severity' || keyLower === 'type' || keyLower === 'kind' || keyLower === 'group') {
+					out[k] = v;
+				}
+			} else if (v && typeof v === 'object' && !Array.isArray(v)) {
+				const nested = extractStatusAndNumbers(v, depth + 1);
+				if (nested && Object.keys(nested).length > 0) {
+					out[k] = nested;
+				}
+			}
+		}
+		return out;
+	}
+
+	function savePersistedLimit(orgId, messageLimit) {
+		if (!isValidOrgId(orgId) || !messageLimit) return;
+		try {
+			if (typeof localStorage !== 'undefined') {
+				const toStore = {
+					windows: messageLimit.windows || null,
+					resolved: messageLimit.resolved || null,
+					capturedAt: Date.now()
+				};
+				localStorage.setItem(`cc_last_limit:${orgId}`, JSON.stringify(toStore));
+			}
+		} catch {
+			// ignore SecurityError / quota
+		}
+	}
+
+	function loadPersistedLimit(orgId) {
+		if (!isValidOrgId(orgId)) return null;
+		try {
+			if (typeof localStorage !== 'undefined') {
+				const raw = localStorage.getItem(`cc_last_limit:${orgId}`);
+				if (raw) {
+					const parsed = JSON.parse(raw);
+					if (parsed && typeof parsed === 'object') {
+						return parsed;
+					}
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return null;
+	}
+
+	function onOrgChanged(newOrgId) {
+		currentOrgId = newOrgId;
+		lastRawUsagePayload = null;
+		lastSseMessageLimit = null;
+
+		const persisted = loadPersistedLimit(newOrgId);
+		if (persisted) {
+			lastSseMessageLimit = persisted;
+			const normalized = normalizeUsagePayload(null, persisted, null, { capturedAt: persisted.capturedAt });
+			currentNormalizedState = normalized;
+			if (ui?.setNormalizedUsage) {
+				ui.setNormalizedUsage(normalized);
+			}
+		} else {
+			const empty = normalizeUsagePayload({ five_hour: null, seven_day: null });
+			currentNormalizedState = empty;
+			if (ui?.setNormalizedUsage) {
+				ui.setNormalizedUsage(empty);
+			}
+		}
+	}
+
 	function getOrgIdFromCookie() {
 		try {
 			const cookies = document.cookie.split(';');
@@ -108,9 +185,9 @@
 		const cookieOrg = getOrgIdFromCookie();
 		if (cookieOrg) {
 			if (currentOrgId !== cookieOrg) {
-				currentOrgId = cookieOrg;
 				orgIdSource = 'cookie';
 				logDebug('org_id_resolved', { source: 'cookie' });
+				onOrgChanged(cookieOrg);
 			}
 			return currentOrgId;
 		}
@@ -118,9 +195,9 @@
 		// Priority 2: Valid UUID sniffed from network paths
 		if (sniffedCandidate && isValidOrgId(sniffedCandidate)) {
 			if (currentOrgId !== sniffedCandidate) {
-				currentOrgId = sniffedCandidate;
 				orgIdSource = 'sniffed';
 				logDebug('org_id_resolved', { source: 'sniffed' });
+				onOrgChanged(sniffedCandidate);
 			}
 			return currentOrgId;
 		}
@@ -170,7 +247,11 @@
 				resolveComposerCard,
 				getOrgIdFromCookie,
 				resolveOrgId,
-				getConversationId
+				getConversationId,
+				savePersistedLimit,
+				loadPersistedLimit,
+				onOrgChanged,
+				extractStatusAndNumbers
 			};
 		}
 		return;
@@ -197,8 +278,19 @@
 		},
 		onCopyDebug: () => {
 			window.__CC_COPY_DEBUG_LOG();
+		},
+		onToggleContextOrCache: () => {
+			if (ui.shouldFetchConversation && ui.shouldFetchConversation()) {
+				refreshConversation();
+			}
 		}
 	});
+
+	// If org is already resolved at startup (e.g. from cookie), load persisted limit immediately
+	const initialOrg = resolveOrgId();
+	if (initialOrg) {
+		onOrgChanged(initialOrg);
+	}
 
 	// Bridge readiness
 	const bridgeReady = CC.injectBridgeOnce();
@@ -249,7 +341,13 @@
 					logDebug('usage_response_shape', CC.normalize.redactUsageResponseShape(raw));
 				}
 
-				const normalized = normalizeUsagePayload(raw, lastSseMessageLimit);
+				const normalized = normalizeUsagePayload(raw, lastSseMessageLimit, null, { capturedAt: lastSseMessageLimit?.capturedAt || null });
+				if (normalized.limitMismatch) {
+					logDebug('limit_percent_mismatch', {
+						windowPct: normalized.limitMismatch.windowPct,
+						resolvedPct: normalized.limitMismatch.resolvedPct
+					});
+				}
 				currentNormalizedState = normalized;
 
 				logDebug('fetch_usage_success', {
@@ -289,6 +387,9 @@
 	let streamRetryTimeoutId = null;
 
 	async function refreshConversation() {
+		if (ui.shouldFetchConversation && !ui.shouldFetchConversation()) {
+			return;
+		}
 		await bridgeReady;
 		const convId = currentConversationId;
 		if (!convId) {
@@ -324,6 +425,9 @@
 	}
 
 	async function triggerStreamPostRefetch(convId, preLeafId, preTokens, streamEndMs) {
+		if (ui.shouldFetchConversation && !ui.shouldFetchConversation()) {
+			return;
+		}
 		if (streamRetryTimeoutId) {
 			clearTimeout(streamRetryTimeoutId);
 			streamRetryTimeoutId = null;
@@ -389,7 +493,7 @@
 		ensurePanelAttached();
 
 		// Immediate conversation refetch after stream completion
-		if (currentConversationId) {
+		if (currentConversationId && (!ui.shouldFetchConversation || ui.shouldFetchConversation())) {
 			const preLeafId = currentConversationLeafId;
 			const preTokens = ui.metrics?.context?.tokens ?? null;
 			logDebug('refetch_start', {
@@ -416,10 +520,24 @@
 
 	CC.bridge.on('cc:message_limit', (messageLimit) => {
 		logDebug('sse_message_limit_received', messageLimit);
+		if (isCcDebugActive()) {
+			logDebug('message_limit_received', extractStatusAndNumbers(messageLimit));
+		}
 		lastSseMessageLimit = messageLimit;
+		const orgId = resolveOrgId();
+		if (orgId) {
+			savePersistedLimit(orgId, messageLimit);
+		}
 
 		// Re-normalize using SSE data
-		const normalized = normalizeUsagePayload(lastRawUsagePayload, lastSseMessageLimit);
+		const capturedAt = Date.now();
+		const normalized = normalizeUsagePayload(lastRawUsagePayload, lastSseMessageLimit, null, { capturedAt });
+		if (normalized.limitMismatch) {
+			logDebug('limit_percent_mismatch', {
+				windowPct: normalized.limitMismatch.windowPct,
+				resolvedPct: normalized.limitMismatch.resolvedPct
+			});
+		}
 		currentNormalizedState = normalized;
 		ui.setNormalizedUsage(normalized);
 	});
@@ -433,12 +551,19 @@
 			logDebug('usage_response_shape', CC.normalize.redactUsageResponseShape(data));
 		}
 
-		const normalized = normalizeUsagePayload(data, lastSseMessageLimit);
+		const normalized = normalizeUsagePayload(data, lastSseMessageLimit, null, { capturedAt: lastSseMessageLimit?.capturedAt || null });
+		if (normalized.limitMismatch) {
+			logDebug('limit_percent_mismatch', {
+				windowPct: normalized.limitMismatch.windowPct,
+				resolvedPct: normalized.limitMismatch.resolvedPct
+			});
+		}
 		currentNormalizedState = normalized;
 		ui.setNormalizedUsage(normalized);
 	});
 
 	CC.bridge.on('cc:conversation', async ({ orgId, conversationId, data }) => {
+		if (ui.shouldFetchConversation && !ui.shouldFetchConversation()) return;
 		if (!conversationId || conversationId !== currentConversationId) return;
 		if (isValidOrgId(orgId)) resolveOrgId(orgId);
 		if (!data || typeof data !== 'object' || !Array.isArray(data.chat_messages)) return;
@@ -679,6 +804,11 @@
 		triggerStreamPostRefetch,
 		refreshConversation,
 		refreshUsage,
+		getUi: () => ui,
+		savePersistedLimit,
+		loadPersistedLimit,
+		onOrgChanged,
+		extractStatusAndNumbers,
 		getConversationInFlight: () => conversationInFlight,
 		getCurrentConversationId: () => currentConversationId,
 		setCurrentConversationId: (id) => { currentConversationId = id; },
@@ -698,6 +828,10 @@
 			getConversationId,
 			triggerStreamPostRefetch,
 			refreshConversation,
+			savePersistedLimit,
+			loadPersistedLimit,
+			onOrgChanged,
+			extractStatusAndNumbers,
 			_internal: CC._internal
 		};
 	}

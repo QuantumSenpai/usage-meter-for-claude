@@ -1,8 +1,8 @@
 (() => {
 	'use strict';
 
-	if (window.__CC_BRIDGE_INSTALLED__) return;
-	window.__CC_BRIDGE_INSTALLED__ = true;
+	if (typeof window !== 'undefined' && window.__CC_BRIDGE_INSTALLED__) return;
+	if (typeof window !== 'undefined') window.__CC_BRIDGE_INSTALLED__ = true;
 
 	const CC_MARKER = 'ClaudeCounter';
 
@@ -67,32 +67,34 @@
 	}
 
 	// 1. Wrap History Early
-	const originalPushState = history.pushState ? history.pushState.bind(history) : null;
-	const originalReplaceState = history.replaceState ? history.replaceState.bind(history) : null;
+	const originalPushState = (typeof history !== 'undefined' && history.pushState) ? history.pushState.bind(history) : null;
+	const originalReplaceState = (typeof history !== 'undefined' && history.replaceState) ? history.replaceState.bind(history) : null;
 
-	if (originalPushState) {
+	if (originalPushState && typeof history !== 'undefined') {
 		history.pushState = function (...args) {
 			const result = originalPushState(...args);
-			post('cc:urlchange', { path: window.location.pathname });
+			post('cc:urlchange', { path: typeof window !== 'undefined' ? window.location?.pathname : '' });
 			return result;
 		};
 	}
 
-	if (originalReplaceState) {
+	if (originalReplaceState && typeof history !== 'undefined') {
 		history.replaceState = function (...args) {
 			const result = originalReplaceState(...args);
-			post('cc:urlchange', { path: window.location.pathname });
+			post('cc:urlchange', { path: typeof window !== 'undefined' ? window.location?.pathname : '' });
 			return result;
 		};
 	}
 
-	window.addEventListener('popstate', () => {
-		post('cc:urlchange', { path: window.location.pathname });
-	});
+	if (typeof window !== 'undefined' && window.addEventListener) {
+		window.addEventListener('popstate', () => {
+			post('cc:urlchange', { path: window.location?.pathname });
+		});
+	}
 
 	// 2. Wrap Fetch
-	const originalFetch = window.fetch ? window.fetch.bind(window) : null;
-	if (originalFetch) {
+	const originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
+	if (originalFetch && typeof window !== 'undefined') {
 		window.fetch = async (...args) => {
 			let url = '';
 			let method = 'GET';
@@ -301,8 +303,9 @@
 	}
 
 	// 4. Handle incoming requests from Content Script
-	window.addEventListener('message', async (event) => {
-		if (event.source !== window) return;
+	if (typeof window !== 'undefined' && window.addEventListener) {
+		window.addEventListener('message', async (event) => {
+			if (event.source !== window) return;
 		const data = event.data;
 		if (!data || data.cc !== CC_MARKER) return;
 
@@ -390,7 +393,14 @@
 			postResponse(requestId, false, null, e?.message || String(e), 0);
 		}
 	});
+}
 
 	// Announce readiness
-	post('cc:ready', { time: Date.now() });
+	if (typeof window !== 'undefined') {
+		post('cc:ready', { time: Date.now() });
+	}
+
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = { handleEventStream };
+	}
 })();

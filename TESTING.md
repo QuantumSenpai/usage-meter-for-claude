@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.8)
+# Testing Checklist: Usage Meter for Claude (v0.6.0)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -304,17 +304,13 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 17. Explicitly Unverified Items (Requires Paid Account)
+### 17. Explicitly Unverified Items
 > [!NOTE]
-> Per project constraints, testing cannot be performed on a live logged-in paid claude.ai session. The following remain unverified against live production accounts and rely on confirmed upstream shapes / synthetic fixtures:
-1. **Live Paid Plan `/usage` Payload Shape:**
-   - Exact key names and nesting on active paid accounts (e.g. `five_hour.utilization`, `five_hour.resets_at` vs alternative schemas).
-   - Covered via tolerant parser in `normalize.js` and verified with fixtures `paid_plan.synthetic.json` and `paid_plan_fractions.synthetic.json`.
-2. **Live SSE `message_limit` Stream Event:**
-   - Real-time window updates emitted during streaming completions on paid plans.
-   - Interception logic and normalization covered via `sse_message_limit.synthetic.json`.
-3. **Real Claude Model Context Windows:**
-   - Claude web responses do not supply a context window limit or model ID field in captured conversation payloads.
+> Per project constraints, live testing cannot be performed on a live logged-in paid claude.ai session. The real capture on 17 Oct 2026 (`sse_message_limit.real.json`) verified `windows["5h"]`, `windows["7d"]`, and `resolved.limit` structures. The following remain unverified:
+1. **Values at high usage:** Behavior and visual treatment when `utilization >= 0.90` or exceeding `1.0` in live accounts.
+2. **Severity values other than `"normal"`:** Real payload examples when Claude flags elevated usage severity (e.g. `"warning"`, `"critical"`).
+3. **Contents of `notice`:** The structure and fields of the `notice` key when Anthropic sends a user-facing notice payload.
+4. **Real Claude Model Context Windows:** Context limit numbers remain unverified estimates (`CONTEXT_WINDOW_TOKENS = 200000`).
 
 ---
 
@@ -379,3 +375,77 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
+
+---
+
+### 20. Rebuilt Plan Usage Limits Panel (v0.6.0)
+- **Preconditions:**
+  1. Load unpacked extension in Brave (`brave://extensions` -> Reload).
+  2. Navigate to `https://claude.ai`.
+  3. Ensure DevTools is open (`Cmd + Option + I` or `F12`) to Console and Network tabs.
+- **Steps:**
+  1. **Two Always-Visible Plan Usage Rows:**
+     - Observe the panel above the composer.
+     - *Expected:* Displays two primary rows: `"Session (5h)"` and `"Weekly (7d)"`.
+     - Context and Cache rows are NOT visible by default.
+     - Thin-line collapsed mode is removed; both rows are always shown cleanly.
+  2. **Values and Formatting:**
+     - After receiving a message limit event:
+     - *Expected:*
+       - Session row: shows `"<used>% used · <left>% left"` where `left = max(0, 100 - used)`.
+       - Weekly row: shows `"<used>% used · <left>% left"`.
+       - Hovering over either percentage text displays tooltip: `"Derived: 100% minus used"`.
+       - Progress bars reflect the respective percentage (capped at 100%).
+  3. **Reset Countdowns & Local Clock Time:**
+     - *Expected:*
+       - Session reset text: displays countdown (e.g., `"resets in 2h 14m"` or `"resets in <1m"`).
+       - Weekly reset text: displays countdown in days and hours (e.g., `"resets in 3d 4h"`).
+       - Hovering over the Weekly reset text displays tooltip with user's local clock date/time formatted via `Intl` (e.g., `"Mon, Oct 19, 5:30 AM"`).
+  4. **Window Rollover Handling (`now >= resets_at`):**
+     - If current time is past the window's reset time (e.g., session expired):
+     - *Expected:*
+       - Percentage text displays: `" — "`.
+       - Reset text displays: `"Window reset, send a message to update"`.
+       - Progress bar width resets to `0%`.
+  5. **Empty State (Fresh Start / No Data):**
+     - On an account with no message history or no cached limits:
+     - *Expected:*
+       - Both rows display `" — "` for percent and `"Updates after your next message"` for reset.
+  6. **Persistence Across Page Reloads (`cc_last_limit:<orgId>`):**
+     - Send a message so usage limits are captured.
+     - Hard refresh the page (`Cmd + Shift + R`).
+     - *Expected:*
+       - Before sending any new message, the panel immediately renders the saved Session and Weekly bars/percentages from `cc_last_limit:<orgId>`.
+       - Hovering over each row displays tooltip: `"As of your last message at HH:MM"` (or date/time if prior day).
+  7. **Multi-Organization Isolation:**
+     - If using multiple Claude workspaces/orgs:
+     - Switch organization.
+     - *Expected:* Org B immediately loads Org B's persisted data if present, or renders empty state (`" — "`). Org A's data is never displayed in Org B.
+  8. **Settings Drawer Toggles & Migration:**
+     - Open the gear drawer.
+     - *Expected:*
+       - Context Window number input is hidden by default.
+       - Two new toggles exist: `"Show Context window estimate"` and `"Show prompt cache timer"`.
+       - Pre-existing settings from earlier versions are automatically migrated to have both unchecked (`v060_migrated: true`) while preserving custom theme and colors.
+       - Check `"Show Context window estimate"`: Context row appears above composer, and Context Window number input appears in the gear drawer.
+       - Check `"Show prompt cache timer"`: Cache row appears.
+       - Uncheck both: Context and Cache rows hide again.
+  9. **Skipping Conversation Fetch while Hidden:**
+     - With Context and Cache toggles unchecked:
+     - Filter Network tab by `chat_conversations`.
+     - Send a message or navigate between chats.
+     - *Expected:* ZERO `/chat_conversations` requests are made by the extension.
+     - Turn on Context in settings: `/chat_conversations` request is immediately dispatched.
+  10. **Aesthetics, Transitions & Motion:**
+      - Inspect the progress bars.
+      - *Expected:* Smooth ~300ms transition on width changes.
+      - In system settings or DevTools, emulate `prefers-reduced-motion: reduce`: transitions are disabled (`none`).
+      - Resize browser window to under 600px width: layout wraps/adjusts cleanly with aligned columns, readable 12-13px font, and no horizontal overflow.
+      - Test both Light and Dark modes: high-contrast text and border styling match the Claude theme.
+  11. **Diagnostics Telemetry (`message_limit_received`):**
+      - With `cc_debug` enabled, send a message.
+      - *Expected:* DevTools console logs `[UsageMeter:Debug] [message_limit_received]` containing only status strings, numbers, and null/boolean fields.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+

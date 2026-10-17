@@ -48,7 +48,12 @@
 	 *   errorReason: string|null
 	 * }
 	 */
-	function normalizeUsagePayload(payload, sseFallback = null, errorContext = null) {
+	function normalizeUsagePayload(payload, sseFallback = null, errorContext = null, options = null) {
+		if (errorContext && typeof errorContext === 'object' && !errorContext.status && !errorContext.message && typeof errorContext.capturedAt === 'number') {
+			options = errorContext;
+			errorContext = null;
+		}
+
 		if (errorContext) {
 			const status = errorContext.status || 0;
 			let reason = 'Usage currently unavailable';
@@ -58,22 +63,30 @@
 			else if (errorContext.message) reason = errorContext.message;
 
 			return {
-				session: { pct: null, resetsAt: null },
-				weekly: { pct: null, resetsAt: null },
+				session: { pct: null, pctUsed: null, pctLeft: null, resetsAt: null },
+				weekly: { pct: null, pctUsed: null, pctLeft: null, resetsAt: null },
 				extras: [],
 				state: 'error',
-				errorReason: reason
+				errorReason: reason,
+				limitMismatch: null,
+				capturedAt: null
 			};
 		}
 
 		if (payload === null || payload === undefined || typeof payload !== 'object') {
-			return {
-				session: { pct: null, resetsAt: null },
-				weekly: { pct: null, resetsAt: null },
-				extras: [],
-				state: 'error',
-				errorReason: 'Malformed usage response'
-			};
+			if (sseFallback && typeof sseFallback === 'object') {
+				payload = {};
+			} else {
+				return {
+					session: { pct: null, pctUsed: null, pctLeft: null, resetsAt: null },
+					weekly: { pct: null, pctUsed: null, pctLeft: null, resetsAt: null },
+					extras: [],
+					state: 'error',
+					errorReason: 'Malformed usage response',
+					limitMismatch: null,
+					capturedAt: null
+				};
+			}
 		}
 
 		const rawWindows = payload.windows || payload;
@@ -101,18 +114,56 @@
 			weekly = extractWindow(sseWindows['7d'] || sseWindows.seven_day);
 		}
 
-		const hasSessionData = session && typeof session.pct === 'number';
-		const hasWeeklyData = weekly && typeof weekly.pct === 'number';
+		// Cross-check Session against resolved.limit.percent (Step 2)
+		let limitMismatch = null;
+		const resolvedSessionPct = (typeof sseFallback?.resolved?.limit?.percent === 'number')
+			? sseFallback.resolved.limit.percent
+			: (typeof payload?.resolved?.limit?.percent === 'number')
+				? payload.resolved.limit.percent
+				: null;
+
+		if (session && typeof session.pct === 'number' && typeof resolvedSessionPct === 'number') {
+			if (Math.abs(session.pct - resolvedSessionPct) > 1) {
+				limitMismatch = { windowPct: session.pct, resolvedPct: resolvedSessionPct };
+				session.pct = resolvedSessionPct;
+			}
+		}
+
+		// Calculate Left = max(0, 100 - used)
+		if (session) {
+			session.pctUsed = typeof session.pct === 'number' ? session.pct : null;
+			session.pctLeft = typeof session.pct === 'number' ? Math.max(0, 100 - session.pct) : null;
+		} else {
+			session = { pct: null, pctUsed: null, pctLeft: null, resetsAt: null };
+		}
+
+		if (weekly) {
+			weekly.pctUsed = typeof weekly.pct === 'number' ? weekly.pct : null;
+			weekly.pctLeft = typeof weekly.pct === 'number' ? Math.max(0, 100 - weekly.pct) : null;
+		} else {
+			weekly = { pct: null, pctUsed: null, pctLeft: null, resetsAt: null };
+		}
+
+		const hasSessionData = typeof session.pct === 'number';
+		const hasWeeklyData = typeof weekly.pct === 'number';
 		const hasExtrasData = extras.some((e) => typeof e.pct === 'number');
 
 		const state = (hasSessionData || hasWeeklyData || hasExtrasData) ? 'ok' : 'empty';
 
+		const capturedAt = (options && typeof options.capturedAt === 'number')
+			? options.capturedAt
+			: (typeof sseFallback?.capturedAt === 'number')
+				? sseFallback.capturedAt
+				: null;
+
 		return {
-			session: session || { pct: null, resetsAt: null },
-			weekly: weekly || { pct: null, resetsAt: null },
+			session,
+			weekly,
 			extras,
 			state,
-			errorReason: null
+			errorReason: null,
+			limitMismatch,
+			capturedAt
 		};
 	}
 

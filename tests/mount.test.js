@@ -8,6 +8,7 @@ require('../src/content/normalize.js');
 const { formatContextUtilization } = require('../src/content/tokens.js');
 const { resolveComposerCard } = require('../src/content/main.js');
 const { CounterUI, PRESETS } = require('../src/content/ui.js');
+const { handleEventStream } = require('../src/injected/bridge.js');
 
 const createMockStorage = () => {
 	const store = {};
@@ -758,6 +759,7 @@ async function test(name, fn) {
 	await test('Bug 2: Chat A in flight -> switch to B -> a separate fetch for B is issued', async () => {
 		const { main } = setupRealMainEnvironment();
 		const { _internal } = main;
+		_internal.getUi().settings.showContext = true;
 
 		const requested = [];
 		let resolveA, resolveB;
@@ -842,6 +844,7 @@ async function test(name, fn) {
 	await test('Retry timer: post-stream retry timer is cleared immediately on chat switch', async () => {
 		const { main, bridgeListeners } = setupRealMainEnvironment();
 		const { _internal } = main;
+		_internal.getUi().settings.showContext = true;
 
 		_internal.setCurrentConversationId('chat-A');
 		_internal.setCurrentConversationLeafId('leaf-1');
@@ -925,6 +928,239 @@ async function test(name, fn) {
 		assert.deepStrictEqual(usageShapeEntry.data.tangelo, { type: 'null' });
 
 		globalThis.__CC_DEBUG = false;
+	});
+
+	// Test 21: Real bridge handler + fake stream + real fixture -> real normalize
+	await test('Real bridge handler + fake stream + real fixture -> real normalize -> 3% / 97% and 6% / 94%', async () => {
+		const fixturePath = path.join(__dirname, 'fixtures/sse_message_limit.real.json');
+		const realFixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+
+		const sseText = [
+			'event: message_start\ndata: {"type":"message_start"}\n\n',
+			`event: message_limit\ndata: ${JSON.stringify(realFixture)}\n\n`,
+			'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+		].join('');
+
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(sseText));
+				controller.close();
+			}
+		});
+
+		const fakeResponse = {
+			clone: () => ({ body: stream }),
+			body: stream
+		};
+
+		let interceptedLimit = null;
+		const originalPostMessage = global.window.postMessage;
+		global.window.postMessage = (data, target) => {
+			if (data?.type === 'cc:message_limit') {
+				interceptedLimit = data.payload;
+			}
+			if (originalPostMessage) originalPostMessage(data, target);
+		};
+
+		try {
+			await handleEventStream(fakeResponse);
+			assert.ok(interceptedLimit !== null, 'Bridge must intercept cc:message_limit event from SSE stream');
+			assert.strictEqual(interceptedLimit.windows['5h'].utilization, 0.03);
+			assert.strictEqual(interceptedLimit.windows['7d'].utilization, 0.06);
+
+			const norm = global.ClaudeCounter.normalize.normalizeUsagePayload(null, interceptedLimit);
+			assert.strictEqual(norm.state, 'ok');
+			assert.strictEqual(norm.session.pctUsed, 3, 'Session pctUsed must be 3');
+			assert.strictEqual(norm.session.pctLeft, 97, 'Session pctLeft must be 97 (100 - 3)');
+			assert.strictEqual(norm.session.resetsAt, '2026-10-17T19:30:00.000Z', 'Session reset time must match unix seconds');
+
+			assert.strictEqual(norm.weekly.pctUsed, 6, 'Weekly pctUsed must be 6');
+			assert.strictEqual(norm.weekly.pctLeft, 94, 'Weekly pctLeft must be 94 (100 - 6)');
+			assert.strictEqual(norm.weekly.resetsAt, '2026-10-23T00:00:00.000Z', 'Weekly reset time must match unix seconds');
+		} finally {
+			global.window.postMessage = originalPostMessage;
+		}
+	});
+
+	// Test 22: Org isolation - Org A persisted data is never shown for Org B
+	await test('Org isolation: Org A persisted data is never shown for Org B', () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+
+		const orgA = '00000000-0000-4000-8000-00000000000a';
+		const orgB = '00000000-0000-4000-8000-00000000000b';
+
+		const fixturePath = path.join(__dirname, 'fixtures/sse_message_limit.real.json');
+		const realFixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+
+		const { main } = setupRealMainEnvironment();
+		const { _internal } = main;
+		const ui = _internal.getUi();
+
+		// Save limit for Org A
+		_internal.savePersistedLimit(orgA, realFixture.message_limit);
+
+		// Switch to Org A -> shows Org A data
+		_internal.onOrgChanged(orgA);
+		assert.strictEqual(ui.currentNormalizedState?.session?.pctUsed, 3, 'Org A must show 3% used');
+		assert.strictEqual(ui.currentNormalizedState?.weekly?.pctUsed, 6, 'Org A must show 6% used');
+
+		// Switch to Org B -> must show empty / dash, NEVER Org A data
+		_internal.onOrgChanged(orgB);
+		assert.strictEqual(ui.currentNormalizedState?.session?.pctUsed, null, 'Org B must not have Org A session data');
+		assert.strictEqual(ui.currentNormalizedState?.weekly?.pctUsed, null, 'Org B must not have Org A weekly data');
+		assert.strictEqual(ui.currentNormalizedState?.state, 'empty', 'Org B with no data must be in empty state');
+
+		// Switch back to Org A -> Org A data is restored
+		_internal.onOrgChanged(orgA);
+		assert.strictEqual(ui.currentNormalizedState?.session?.pctUsed, 3, 'Org A data must be restored upon switching back');
+		assert.strictEqual(ui.currentNormalizedState?.weekly?.pctUsed, 6, 'Org A data must be restored upon switching back');
+	});
+
+	// Test 23: Rollover - when now >= resets_at, window shows "—" and "Window reset, send a message to update"
+	await test('Rollover: now >= resets_at displays dash and "Window reset, send a message to update"', () => {
+		const ui = new CounterUI();
+		const panel = new FakeElement('div', { class: 'cc-panel' });
+		const host = new FakeElement('div');
+		host.attachShadow = () => host;
+		ui.rootElement = host;
+		ui.shadowRoot = host;
+		ui.panel = panel;
+
+		const sessPct = new FakeElement('span');
+		const sessReset = new FakeElement('span');
+		const sessBar = new FakeElement('div');
+		const sessBarTrack = new FakeElement('div');
+		sessBarTrack.appendChild(sessBar);
+
+		const weekPct = new FakeElement('span');
+		const weekReset = new FakeElement('span');
+		const weekBar = new FakeElement('div');
+		const weekBarTrack = new FakeElement('div');
+		weekBarTrack.appendChild(weekBar);
+
+		ui.dom = {
+			rowSession: new FakeElement('div'),
+			rowWeekly: new FakeElement('div'),
+			sessPct,
+			sessReset,
+			sessBar,
+			weekPct,
+			weekReset,
+			weekBar
+		};
+
+		const resetTimeMs = 1792265400 * 1000;
+		const norm = {
+			state: 'ok',
+			session: {
+				pctUsed: 42,
+				pctLeft: 58,
+				resetsAt: new Date(resetTimeMs).toISOString()
+			},
+			weekly: {
+				pctUsed: 15,
+				pctLeft: 85,
+				resetsAt: new Date(resetTimeMs + 86400000).toISOString()
+			},
+			capturedAt: resetTimeMs - 3600000
+		};
+
+		ui.setNormalizedUsage(norm);
+
+		// Before rollover: shows percent used/left and countdown
+		ui.renderSessionAndWeekly(resetTimeMs - 60000);
+		assert.strictEqual(sessPct.textContent, '42% used · 58% left');
+		assert.strictEqual(sessReset.textContent, 'resets in 1m');
+		assert.strictEqual(sessBar.style.width, '42%');
+
+		// At and after rollover (now >= resets_at):
+		ui.renderSessionAndWeekly(resetTimeMs);
+		assert.strictEqual(sessPct.textContent, '—', 'Rolled over session must display dash');
+		assert.strictEqual(sessReset.textContent, 'Window reset, send a message to update', 'Rolled over session must show reset notice');
+		assert.strictEqual(sessBar.style.width, '0%', 'Rolled over session bar width must be 0%');
+
+		// Weekly reset has not passed yet: still active
+		assert.strictEqual(weekPct.textContent, '15% used · 85% left');
+		assert.strictEqual(weekBar.style.width, '15%');
+	});
+
+	// Test 24: Migration - migrates existing saved settings to hide Context & Cache by default while preserving custom colors/theme
+	await test('Migration: hides Context and Cache for existing saved settings while preserving theme and colors', () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+
+		// Pre-existing settings saved by v0.5.8 user
+		const existingSettings = {
+			preset: 'sunset',
+			lowColor: '#123456',
+			midColor: '#345678',
+			highColor: '#789abc',
+			opacity: 0.85,
+			showContext: true,
+			showCache: true,
+			showSession: true,
+			showWeekly: true
+		};
+		storage.setItem('cc_settings', JSON.stringify(existingSettings));
+
+		// Load CounterUI in v0.6.0
+		const ui = new CounterUI();
+
+		// Asserts
+		assert.strictEqual(ui.settings.preset, 'sunset', 'Must preserve user preset');
+		assert.strictEqual(ui.settings.lowColor, '#123456', 'Must preserve custom lowColor');
+		assert.strictEqual(ui.settings.opacity, 0.85, 'Must preserve opacity');
+		assert.strictEqual(ui.settings.showSession, true, 'Must preserve showSession');
+		assert.strictEqual(ui.settings.showWeekly, true, 'Must preserve showWeekly');
+
+		assert.strictEqual(ui.settings.v060_migrated, true, 'Must set v060_migrated=true');
+		assert.strictEqual(ui.settings.showContext, false, 'Must migrate showContext to false');
+		assert.strictEqual(ui.settings.showCache, false, 'Must migrate showCache to false');
+
+		// Check persisted in storage
+		const saved = JSON.parse(storage.getItem('cc_settings'));
+		assert.strictEqual(saved.v060_migrated, true);
+		assert.strictEqual(saved.showContext, false);
+		assert.strictEqual(saved.showCache, false);
+		assert.strictEqual(saved.lowColor, '#123456');
+	});
+
+	// Test 25: No conversation fetch is issued while Context and Cache are hidden; resumes when enabled
+	await test('No conversation fetch is issued while Context and Cache are hidden; resumes when turned back on', async () => {
+		const { main } = setupRealMainEnvironment();
+		const { _internal } = main;
+		const ui = _internal.getUi();
+
+		// Default in v0.6.0: Context & Cache are hidden
+		assert.strictEqual(ui.settings.showContext, false);
+		assert.strictEqual(ui.settings.showCache, false);
+		assert.strictEqual(ui.shouldFetchConversation(), false);
+
+		let fetchCalls = 0;
+		global.ClaudeCounter.bridge.requestConversation = async () => {
+			fetchCalls++;
+			return { chat_messages: [] };
+		};
+
+		_internal.setCurrentConversationId('chat-hidden-test');
+
+		// 1. Calling refreshConversation must be a NO-OP (0 network requests)
+		await _internal.refreshConversation();
+		assert.strictEqual(fetchCalls, 0, 'No conversation fetch should be issued while Context & Cache are hidden');
+
+		// 2. Stream post-refetch must also be a NO-OP
+		await _internal.triggerStreamPostRefetch('chat-hidden-test', 'leaf-1', null, Date.now());
+		assert.strictEqual(fetchCalls, 0, 'No stream post-refetch should be issued while Context & Cache are hidden');
+
+		// 3. User turns Context back on in settings
+		ui.settings.showContext = true;
+		assert.strictEqual(ui.shouldFetchConversation(), true);
+
+		// 4. Now refreshConversation proceeds and issues fetch
+		await _internal.refreshConversation();
+		assert.strictEqual(fetchCalls, 1, 'Conversation fetch must proceed after user enables Context');
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
