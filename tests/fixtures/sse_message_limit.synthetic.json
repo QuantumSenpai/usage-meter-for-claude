@@ -1,0 +1,13 @@
+{
+  "_comment": "SYNTHETIC: Built from upstream SSE message_limit shape",
+  "windows": {
+    "5h": {
+      "utilization": 0.35,
+      "resets_at": 1729184400
+    },
+    "7d": {
+      "utilization": 0.12,
+      "resets_at": 1729789200
+    }
+  }
+}

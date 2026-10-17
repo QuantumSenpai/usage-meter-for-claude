@@ -48,14 +48,21 @@
 		return '';
 	}
 
+	const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+	function isValidOrgId(id) {
+		return typeof id === 'string' && UUID_REGEX.test(id) && id.toLowerCase() !== 'discoverable';
+	}
+
 	function getConversationMeta(url) {
-		// Matches /api/organizations/{orgId}/chat_conversations/{conversationId}
-		const match = url.match(/\/api\/organizations\/([^/?#]+)\/chat_conversations\/([^/?#]+)/);
+		// Matches /api/organizations/{orgId}/chat_conversations/{conversationId} where orgId is a valid UUID
+		const match = url.match(/\/api\/organizations\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/chat_conversations\/([^/?#]+)/i);
 		return match ? { orgId: match[1], conversationId: match[2] } : null;
 	}
 
 	function getOrgMeta(url) {
-		const match = url.match(/\/api\/organizations\/([^/?#]+)/);
+		// Strict UUID capture to prevent grabbing non-UUID paths like /api/organizations/discoverable
+		const match = url.match(/\/api\/organizations\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
 		return match ? match[1] : null;
 	}
 
@@ -287,7 +294,10 @@
 
 			if (kind === 'usage') {
 				const orgId = payload?.orgId;
-				if (!orgId) throw new Error('Missing orgId');
+				if (!isValidOrgId(orgId)) {
+					postResponse(requestId, false, null, 'Invalid organization UUID', 400);
+					return;
+				}
 				const fetchFn = originalFetch || window.fetch;
 				const res = await fetchFn(`https://claude.ai/api/organizations/${orgId}/usage`, {
 					method: 'GET',
@@ -305,7 +315,10 @@
 			if (kind === 'conversation') {
 				const orgId = payload?.orgId;
 				const conversationId = payload?.conversationId;
-				if (!orgId || !conversationId) throw new Error('Missing orgId/conversationId');
+				if (!isValidOrgId(orgId) || !conversationId) {
+					postResponse(requestId, false, null, 'Invalid orgId or conversationId', 400);
+					return;
+				}
 
 				const fetchFn = originalFetch || window.fetch;
 				const url = `https://claude.ai/api/organizations/${orgId}/chat_conversations/${conversationId}?tree=true&rendering_mode=messages&render_all_tools=true`;

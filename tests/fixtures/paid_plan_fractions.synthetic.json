@@ -1,0 +1,13 @@
+{
+  "_comment": "SYNTHETIC: Built from alternative window naming ('5h'/'7d') with fractional utilization (0-1) and unix epoch timestamps",
+  "windows": {
+    "5h": {
+      "utilization": 0.65,
+      "resets_at": 1729184400
+    },
+    "7d": {
+      "utilization": 0.22,
+      "resets_at": 1729789200
+    }
+  }
+}
