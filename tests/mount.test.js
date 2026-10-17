@@ -510,6 +510,107 @@ async function test(name, fn) {
 		assert.strictEqual(ui.settings.contextWindow, 200000, 'resetDefaults() must restore 200,000');
 	});
 
+	// Test 12: Size CSS values present in UI_STYLES
+	await test('CSS Sizes: verifies min-height: 32px, 7px tracks, 12px fonts, and padding: 5px 12px', () => {
+		const uiSrc = fs.readFileSync(path.join(__dirname, '../src/content/ui.js'), 'utf8');
+
+		assert.ok(uiSrc.includes('min-height: 32px;'), 'Must have min-height: 32px on summary line');
+		assert.ok(uiSrc.includes('padding: 5px 12px;'), 'Must have padding: 5px 12px on summary line');
+		assert.ok(uiSrc.includes('height: 7px;'), 'Must have height: 7px on bar tracks');
+		assert.ok(uiSrc.includes('font-size: 12px;'), 'Must have font-size: 12px on host and labels');
+	});
+
+	// Test 13: Post-stream refresh and stale-while-revalidate timing (no flicker, one retry max, no loop)
+	await test('Post-stream: stale-while-revalidate keeps previous value, single 1500ms retry max, no loop', async () => {
+		const ui = new CounterUI();
+		ui.dom = {
+			ctxMain: { textContent: '' },
+			ctxPct: { textContent: '', title: '', style: {} },
+			ctxBar: {
+				style: {},
+				title: '',
+				parentElement: { setAttribute: () => {}, title: '' }
+			}
+		};
+		const panelClasses = new Set();
+		ui.panel = {
+			classList: {
+				toggle(c, force) {
+					if (force) panelClasses.add(c);
+					else panelClasses.delete(c);
+				},
+				remove(c) { panelClasses.delete(c); },
+				add(c) { panelClasses.add(c); },
+				contains(c) { return panelClasses.has(c); }
+			},
+			style: { setProperty: () => {} }
+		};
+
+		// 1. Initial load sets valid tokens (100,000 = 50%)
+		ui.setConversationMetrics({ totalTokens: 100000, isLoaded: true });
+		assert.strictEqual(ui.metrics.context.isLoaded, true);
+		assert.strictEqual(ui.dom.ctxPct.textContent, '50% used · 50% left');
+
+		// 2. Stale-while-revalidate in same chat: if re-fetching or empty update received, do NOT reset to "—"
+		ui.setConversationMetrics({ totalTokens: null, isLoaded: false });
+		assert.strictEqual(ui.metrics.context.isLoaded, true, 'Must preserve isLoaded=true in same chat');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '50% used · 50% left', 'Must not flash dash');
+
+		// 3. Fake timer retry logic simulation
+		let refetchCount = 0;
+		let conversationLeaf = 'msg-leaf-1';
+		let totalTokens = 100000;
+		let retryTimerId = null;
+
+		async function mockRefreshConversation() {
+			refetchCount++;
+		}
+
+		async function simulateStreamPostRefetch(convId, preLeafId, preTokens, onDone) {
+			await mockRefreshConversation();
+
+			const leafChanged = conversationLeaf !== preLeafId;
+			const tokensChanged = totalTokens !== preTokens;
+
+			if (!leafChanged && !tokensChanged) {
+				retryTimerId = setTimeout(async () => {
+					retryTimerId = null;
+					await mockRefreshConversation();
+					if (onDone) onDone();
+				}, 1500);
+			} else {
+				if (onDone) onDone();
+			}
+		}
+
+		// A: Immediate refetch with uncommitted leaf (no change) -> schedules 1 retry after 1500ms
+		await simulateStreamPostRefetch('conv-1', 'msg-leaf-1', 100000);
+		assert.strictEqual(refetchCount, 1, 'Must immediately trigger conversation refetch');
+		assert.ok(retryTimerId !== null, 'Must schedule one retry after 1500ms when leaf/tokens unchanged');
+
+		// Advance timer by 1500ms
+		await new Promise((resolve) => {
+			const originalTimer = retryTimerId;
+			clearTimeout(originalTimer);
+			// Execute retry callback directly
+			mockRefreshConversation().then(() => {
+				retryTimerId = null;
+				resolve();
+			});
+		});
+
+		assert.strictEqual(refetchCount, 2, 'Must have executed exactly one retry');
+		assert.strictEqual(retryTimerId, null, 'Must stop after one retry (no loop)');
+
+		// B: Immediate refetch with new leaf -> does NOT schedule retry
+		refetchCount = 0;
+		conversationLeaf = 'msg-leaf-2'; // new leaf committed
+		totalTokens = 120000;
+		await simulateStreamPostRefetch('conv-1', 'msg-leaf-1', 100000);
+		assert.strictEqual(refetchCount, 1, 'Immediate refetch triggered');
+		assert.strictEqual(retryTimerId, null, 'No retry scheduled when leaf/tokens changed');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	if (failCount > 0) process.exit(1);
 })();

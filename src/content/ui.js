@@ -114,7 +114,7 @@
 			width: 100%;
 			box-sizing: border-box;
 			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-			font-size: 11px;
+			font-size: 12px;
 			line-height: 1.4;
 			user-select: none;
 			-webkit-font-smoothing: antialiased;
@@ -167,8 +167,8 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 4px 10px;
-			min-height: 26px;
+			padding: 5px 12px;
+			min-height: 32px;
 			cursor: pointer;
 			gap: 8px;
 			transition: background-color 120ms ease;
@@ -187,7 +187,7 @@
 		}
 
 		.cc-label {
-			font-size: 11px;
+			font-size: 12px;
 			font-weight: 500;
 			color: var(--cc-text);
 			white-space: nowrap;
@@ -197,21 +197,21 @@
 		.cc-bar-track--mini {
 			width: 80px;
 			max-width: 25%;
-			height: 5px;
+			height: 7px;
 			flex-shrink: 0;
 		}
 
 		.cc-summary-right {
 			display: flex;
 			align-items: center;
-			gap: 2px;
+			gap: 4px;
 			flex-shrink: 0;
 		}
 
 		.cc-btn {
 			background: none;
 			border: none;
-			padding: 3px;
+			padding: 4px;
 			color: var(--cc-text-muted);
 			cursor: pointer;
 			border-radius: 4px;
@@ -241,7 +241,7 @@
 		/* Collapsible Details View */
 		.cc-details {
 			display: none;
-			padding: 4px 10px 8px 10px;
+			padding: 6px 12px 10px 12px;
 			border-top: 1px solid var(--cc-border, rgba(255, 255, 255, 0.06));
 		}
 
@@ -265,7 +265,7 @@
 			display: flex;
 			align-items: baseline;
 			justify-content: space-between;
-			font-size: 11px;
+			font-size: 12px;
 		}
 
 		.cc-cache-meta-left {
@@ -304,14 +304,14 @@
 		}
 
 		.cc-val-reset {
-			font-size: 10px;
+			font-size: 11px;
 		}
 
 		.cc-bar-track {
 			position: relative;
-			height: 5px;
+			height: 7px;
 			background: var(--cc-bar-bg);
-			border-radius: 3px;
+			border-radius: 3.5px;
 			overflow: hidden;
 			width: 100%;
 		}
@@ -319,7 +319,7 @@
 		.cc-bar-fill {
 			height: 100%;
 			width: 0%;
-			border-radius: 3px;
+			border-radius: 3.5px;
 			background-color: var(--cc-color-low, #10b981);
 			transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1), background-color 300ms ease;
 		}
@@ -392,7 +392,7 @@
 		/* State: Empty Plan Notice */
 		.cc-empty-notice {
 			display: none;
-			font-size: 10px;
+			font-size: 11px;
 			color: var(--cc-text-muted);
 			padding: 4px 0;
 			text-align: left;
@@ -418,7 +418,7 @@
 			border-radius: 6px;
 			padding: 4px 8px;
 			margin: 4px 0;
-			font-size: 10px;
+			font-size: 11px;
 			color: #ef4444;
 		}
 
@@ -430,7 +430,7 @@
 			background: rgba(239, 68, 68, 0.2);
 			border: none;
 			color: #ef4444;
-			font-size: 10px;
+			font-size: 11px;
 			padding: 2px 6px;
 			border-radius: 4px;
 			cursor: pointer;
@@ -446,7 +446,7 @@
 			margin-top: 6px;
 			padding-top: 6px;
 			border-top: 1px solid var(--cc-border, rgba(255, 255, 255, 0.08));
-			font-size: 10px;
+			font-size: 11px;
 		}
 
 		.cc-settings-drawer.cc-open {
@@ -459,7 +459,7 @@
 			margin-bottom: 4px;
 			text-transform: uppercase;
 			letter-spacing: 0.04em;
-			font-size: 9px;
+			font-size: 10px;
 		}
 
 		.cc-presets-grid {
@@ -475,7 +475,7 @@
 			color: var(--cc-text);
 			border-radius: 4px;
 			padding: 3px 2px;
-			font-size: 9px;
+			font-size: 10px;
 			cursor: pointer;
 			text-align: center;
 			transition: background 120ms ease;
@@ -515,7 +515,7 @@
 			color: var(--cc-text);
 			border-radius: 4px;
 			padding: 2px 4px;
-			font-size: 9px;
+			font-size: 10px;
 			font-family: inherit;
 			text-align: right;
 		}
@@ -530,7 +530,7 @@
 			border-radius: 4px;
 			background: rgba(245, 158, 11, 0.15);
 			color: #f59e0b;
-			font-size: 9px;
+			font-size: 10px;
 			margin-top: 4px;
 		}
 
@@ -550,7 +550,7 @@
 			color: var(--cc-text);
 			border-radius: 4px;
 			padding: 3px 6px;
-			font-size: 9px;
+			font-size: 10px;
 			cursor: pointer;
 			flex: 1;
 		}
@@ -696,13 +696,13 @@
 					</div>
 					<div class="cc-summary-right">
 						<button class="cc-btn" id="cc-debug-btn" title="Copy Diagnostic Log" style="display: none;">
-							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
 						</button>
 						<button class="cc-btn" id="cc-gear-btn" title="Settings &amp; Colors">
-							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
 						</button>
 						<button class="cc-btn cc-expand-btn" id="cc-expand-btn" title="Expand / collapse details" aria-expanded="${this.isExpanded}">
-							<svg class="cc-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+							<svg class="cc-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
 						</button>
 					</div>
 				</div>
@@ -1128,8 +1128,18 @@
 			}
 		}
 
+		getEffectiveContextWindow() {
+			const fallback = CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			if (CC.tokens?.resolveContextWindow) {
+				return CC.tokens.resolveContextWindow(this.settings?.contextWindow, this.detectedContextWindow, fallback);
+			}
+			return (typeof this.settings?.contextWindow === 'number' && this.settings.contextWindow > 0)
+				? this.settings.contextWindow
+				: fallback;
+		}
+
 		setConversationLoading() {
-			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			const limit = this.getEffectiveContextWindow();
 			const limitStr = limit >= 1000 ? `${Math.round(limit / 1000)}k` : String(limit);
 			const tooltip = 'Estimated size of this chat vs. context window. Not your plan usage limit. The window size may differ by model, adjust it in settings.';
 			this.metrics.context = {
@@ -1173,12 +1183,15 @@
 			this.lastConversationData = { totalTokens, cachedUntil, isLoaded };
 
 			if (!isLoaded || typeof totalTokens !== 'number' || isNaN(totalTokens)) {
-				this.setConversationLoading();
+				// Stale-while-revalidate: only reset to loading if metrics are not already loaded
+				if (!this.metrics.context.isLoaded) {
+					this.setConversationLoading();
+				}
 				return;
 			}
 
 			const tokens = Math.max(0, Math.round(totalTokens));
-			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			const limit = this.getEffectiveContextWindow();
 			this.metrics.cachedUntil = cachedUntil;
 
 			const util = CC.tokens?.formatContextUtilization

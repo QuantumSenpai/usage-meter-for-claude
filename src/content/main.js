@@ -268,6 +268,10 @@
 	}
 
 	let currentConversationId = null;
+	let currentConversationLeafId = null;
+	let conversationInFlightPromise = null;
+	let lastStreamEndMs = null;
+	let streamRetryTimeoutId = null;
 
 	async function refreshConversation() {
 		await bridgeReady;
@@ -279,11 +283,52 @@
 		const orgId = resolveOrgId();
 		if (!orgId) return;
 
-		try {
-			logDebug('fetch_conversation_start', { conversationId: currentConversationId });
-			await CC.bridge.requestConversation(orgId, currentConversationId);
-		} catch (err) {
-			logDebug('fetch_conversation_error', { message: err?.message });
+		// Promise deduplication: share single in-flight conversation request
+		if (conversationInFlightPromise) {
+			return await conversationInFlightPromise;
+		}
+
+		conversationInFlightPromise = (async () => {
+			try {
+				logDebug('fetch_conversation_start', { conversationId: currentConversationId });
+				await CC.bridge.requestConversation(orgId, currentConversationId);
+			} catch (err) {
+				logDebug('fetch_conversation_error', { message: err?.message });
+			} finally {
+				conversationInFlightPromise = null;
+			}
+		})();
+
+		return await conversationInFlightPromise;
+	}
+
+	async function triggerStreamPostRefetch(convId, preLeafId, preTokens, streamEndMs) {
+		if (streamRetryTimeoutId) {
+			clearTimeout(streamRetryTimeoutId);
+			streamRetryTimeoutId = null;
+		}
+
+		await refreshConversation();
+
+		if (currentConversationId !== convId) return;
+
+		const currentLeaf = currentConversationLeafId;
+		const currentTokens = ui.metrics?.context?.tokens ?? null;
+		const leafChanged = Boolean(currentLeaf && currentLeaf !== preLeafId);
+		const tokensChanged = typeof currentTokens === 'number' && typeof preTokens === 'number' && currentTokens !== preTokens;
+
+		// If leaf message ID or token count did NOT change, retry ONCE after ~1500ms, then stop
+		if (!leafChanged && !tokensChanged) {
+			streamRetryTimeoutId = setTimeout(async () => {
+				streamRetryTimeoutId = null;
+				if (currentConversationId !== convId) return;
+				logDebug('refetch_start', {
+					conversationId: convId,
+					reason: 'stream_retry_1500ms',
+					elapsedMs: Date.now() - streamEndMs
+				});
+				await refreshConversation();
+			}, 1500);
 		}
 	}
 
@@ -309,16 +354,28 @@
 	});
 
 	CC.bridge.on('cc:stream_completed', () => {
-		logDebug('stream_completed', {});
+		const streamEndMs = Date.now();
+		lastStreamEndMs = streamEndMs;
+		logDebug('stream_end', { conversationId: currentConversationId });
 		ensurePanelAttached();
-		// Immediate post-message usage and conversation refresh (allowed to bypass 30s throttle)
+
+		// Immediate conversation refetch after stream completion
+		if (currentConversationId) {
+			const preLeafId = currentConversationLeafId;
+			const preTokens = ui.metrics?.context?.tokens ?? null;
+			logDebug('refetch_start', {
+				conversationId: currentConversationId,
+				reason: 'stream_end',
+				elapsedMs: Date.now() - streamEndMs
+			});
+			triggerStreamPostRefetch(currentConversationId, preLeafId, preTokens, streamEndMs);
+		}
+
+		// Existing post-message usage refresh (allowed to bypass 30s throttle)
 		setTimeout(() => {
 			consecutiveFetchErrors = 0;
 			ensurePanelAttached();
 			refreshUsage({ force: true });
-			if (currentConversationId) {
-				refreshConversation();
-			}
 		}, 1000);
 	});
 
@@ -347,9 +404,28 @@
 		if (isValidOrgId(orgId)) resolveOrgId(orgId);
 		if (!data || typeof data !== 'object' || !Array.isArray(data.chat_messages)) return;
 
+		if (data.current_leaf_message_uuid) {
+			currentConversationLeafId = data.current_leaf_message_uuid;
+		}
+
+		// Debug scan: log top-level and first message key names + numeric/model matches only
+		if (CC.tokens?.scanPayloadDebugKeys) {
+			const keyScan = CC.tokens.scanPayloadDebugKeys(data);
+			logDebug('conversation_payload_keys', keyScan);
+		}
+
 		try {
 			const metrics = await CC.tokens.computeConversationMetrics(data);
-			logDebug('conversation_metrics_computed', { tokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
+			const elapsedMs = lastStreamEndMs ? (Date.now() - lastStreamEndMs) : null;
+			logDebug('metrics_computed', {
+				tokens: metrics.totalTokens,
+				elapsedMs
+			});
+			logDebug('conversation_metrics_computed', {
+				tokens: metrics.totalTokens,
+				cachedUntil: metrics.cachedUntil,
+				elapsedMs
+			});
 			ui.setConversationMetrics({
 				totalTokens: metrics.totalTokens,
 				cachedUntil: metrics.cachedUntil,
@@ -448,9 +524,21 @@
 		ui.setConversationActive(!!currentConversationId);
 
 		if (!currentConversationId) {
+			currentConversationLeafId = null;
+			if (streamRetryTimeoutId) {
+				clearTimeout(streamRetryTimeoutId);
+				streamRetryTimeoutId = null;
+			}
+			lastStreamEndMs = null;
 			ui.setConversationLoading();
 		} else {
 			if (convChanged) {
+				currentConversationLeafId = null;
+				if (streamRetryTimeoutId) {
+					clearTimeout(streamRetryTimeoutId);
+					streamRetryTimeoutId = null;
+				}
+				lastStreamEndMs = null;
 				ui.setConversationLoading();
 			}
 			await refreshConversation();
@@ -523,13 +611,15 @@
 	handleUrlChange();
 
 	CC.mount = { resolveComposerCard };
+	CC._internal = { triggerStreamPostRefetch, refreshConversation, refreshUsage };
 
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
 			resolveComposerCard,
 			getOrgIdFromCookie,
 			resolveOrgId,
-			getConversationId
+			getConversationId,
+			triggerStreamPostRefetch
 		};
 	}
 })();

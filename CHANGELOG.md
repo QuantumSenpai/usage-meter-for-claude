@@ -2,6 +2,29 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.6] - 2026-10-17
+
+### Fast Post-Stream Context Refresh, UI Sizing & Payload Key Scanner
+- **Fast Post-Stream Conversation Refresh:**
+  - Removed former 1000ms delay prior to conversation refetch; refetch starts immediately after completion stream ends.
+  - Implemented single in-flight deduplication promise (`conversationInFlightPromise`) to prevent concurrent refetches.
+  - Stale-while-revalidate: retains existing token count while refetching in the same conversation, avoiding "—" flickering. "—" is displayed strictly on chat switch or initial load.
+  - Automatic retry: if Claude's backend returns an uncommitted conversation tree (leaf message ID and token count unchanged), retries once after ~1500ms and stops (no loops).
+  - Maintained request discipline: 30-second interval throttle for `/usage` and single post-stream `/usage` refresh remain intact.
+  - Added debug timing lines (`stream_end`, `refetch_start`, `metrics_computed` with elapsed milliseconds since stream end).
+- **Panel Size & Hit Area Adjustments:**
+  - Thin line minimum height increased from 26px to 32px with expanded padding (`5px 12px`).
+  - Base and label font sizes bumped by +1px (11px -> 12px; notices/settings from 9px/10px -> 10px/11px).
+  - Mini progress bar track and standard track height increased from 5px to 7px (+2px).
+  - Larger hit areas for gear and chevron controls with expanded icon dimensions.
+  - Preserved responsive narrow view layout (<600px) with zero horizontal overflow in light and dark themes.
+- **Context Window Auto-Detect & Diagnostic Scanner:**
+  - Implemented `resolveContextWindow(override, detected, fallback)` with strict priority: user gear setting > detected limit > 200k default.
+  - Verified absence of model/context fields in captured payloads (`tests/fixtures/conversation_tree.json:1-97`) and `DIAGNOSIS.md`. Avoided guessing tables.
+  - Added debug-only diagnostic payload scanner (`scanPayloadDebugKeys`) logging key names only for top-level and first message, extracting only numbers or short model identifier strings matching `/context|window|limit|model/i` for evidence collection without exposing chat text.
+
+---
+
 ## [0.5.5] - 2026-10-17
 
 ### Context Percentage Used & Left, Tier Colors & Row Tooltip

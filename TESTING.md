@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.5)
+# Testing Checklist: Usage Meter for Claude (v0.5.6)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -12,23 +12,23 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-## Brave Manual Verification Matrix (v0.5.5)
+## Brave Manual Verification Matrix (v0.5.6)
 
-### 0. Context Percentage Used & Left, Tier Colors, and Row Tooltip (v0.5.5)
+### 0. Context Percentage Used & Left, Tier Colors, and Row Tooltip
 - **Preconditions:** Extension reloaded, open any chat on `https://claude.ai`.
 - **Steps:**
   1. **Collapsed Thin Line Format:**
      - Observe the collapsed summary line.
-     - *Expected:* Displays in the format `Context  [bar]  62% used · 38% left`.
-     - The estimate label (`~124k est. / 200k`) is hidden in the collapsed state.
+     - *Expected:* Displays in the format `Context  [bar]  62% used · 38% left` with a clean height of ~32px.
+     - The token estimate (`~124k est. / 200k`) is hidden in the collapsed state to keep the bar and percentage uncluttered.
   2. **Expanded View Format:**
-     - Click the chevron to expand the drawer.
+     - Click the chevron (or summary line) to expand the details drawer.
      - *Expected:* Both the estimate (`~124k est. / 200k`) and percentages (`62% used · 38% left`) are clearly visible.
   3. **Tier Colors by Percent Used:**
-     - In chats of varying lengths (or adjust the context window setting to simulate):
+     - In chats of varying lengths (or adjust the context window setting in the gear drawer):
        - `< 60%` used: Progress bar uses **LOW color** (emerald green `#10b981`).
-       - `60% to < 90%` used: Progress bar and percentage text use **MID color** (amber orange `#f59e0b`).
-       - `>= 90%` used: Progress bar and percentage text use **HIGH color** (crimson red `#ef4444`).
+       - `60% to < 90%` used: Progress bar and percentage text use **MID warning color** (amber orange `#f59e0b`).
+       - `>= 90%` used: Progress bar and percentage text use **HIGH warning color** (crimson red `#ef4444`).
        - Note: Old "long chat" label and old "exceeds by 10%" rule are completely removed.
   4. **Over 100% Context Window:**
      - In a chat exceeding the context window (e.g. 231k tokens with 200k limit, or override limit to 100000):
@@ -78,42 +78,42 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
   4. Click the thin line again to collapse.
   5. Expand the panel, reload the page (`Cmd + Shift + R`), and observe state.
 - **Expected Results:**
-  - **Collapsed View (Default):** Displays as a single thin line (~26px high) containing: `Context` label, mini progress bar, token count (e.g. `~231k / 200k`), percent (`>100%`), gear icon, and chevron arrow.
+  - **Collapsed View (Default):** Displays as a single thin line (~32px high) containing: `Context` label, 7px mini progress bar, percent (`62% used · 38% left` or `100%+ used · 0% left`), gear icon, and chevron arrow.
   - **Click to Expand:** Smoothly unfolds the details area showing Cache status, Session/Weekly usage (or single free-plan notice), and Settings drawer.
   - **State Persistence:** Remembers collapsed/expanded state across page reloads via `localStorage.cc_expanded`.
-  - **Gear Icon:** Clicking the gear icon opens color settings (and automatically expands panel if currently collapsed) without collapsing.
+  - **Gear Icon:** Clicking the gear icon opens color & limit settings without collapsing.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 3. Composer Re-Render Survival (Chat Switch & New Chat)
+### 3. Composer Re-Render Survival & Fast Post-Stream Refresh
 - **Preconditions:** In an active chat with the panel mounted.
 - **Steps:**
-  1. Click another chat in the left sidebar.
-  2. Click the Claude logo or "Start new chat" button (`/new`).
-  3. Navigate back to an existing chat.
-  4. Send a message and wait for streaming completion.
+  1. Send a prompt to Claude and observe the Context row during and immediately after streaming finishes.
+  2. Click another chat in the left sidebar, then click back.
 - **Expected Results:**
-  - When Claude re-renders or replaces the composer card, the panel host re-mounts immediately above the new card.
-  - Exactly one `#cc-usage-meter-root` exists in DOM (no duplicate hosts).
-  - Context tokens reset to `— / 200k` while loading, then display the new conversation's count.
-  - Panel preserves current expanded/collapsed state and color settings.
+  - When the assistant completes streaming, the Context row refreshes within ~1 second without page reload.
+  - **Stale-while-revalidate:** While refetching in the same chat, the old count remains displayed (no flashing "—").
+  - "—" appears only when switching chats or upon initial page load before conversation data arrives.
+  - If Claude's server returns the pre-stream leaf message, the extension automatically retries once after ~1500ms and stops (no loops).
+  - Single `#cc-usage-meter-root` remains mounted with zero duplication.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 4. Over-Limit Color Bug Fix (>100% Context)
-- **Preconditions:** Open a long conversation thread exceeding 200k tokens (e.g. ~231k / 200k).
+### 4. Over-Limit State (>100% Context)
+- **Preconditions:** Open a long conversation thread exceeding the context window limit (or set the override limit lower in the gear drawer).
 - **Steps:**
   1. Observe the progress bar and percentage display in the thin line (and expanded details).
 - **Expected Results:**
-  - Progress bar is colored with the **warning/high color** (red `#ef4444` on default preset; NOT grey).
-  - Percentage text displays `>100%` in warning color.
-  - Progress bar width is strictly capped at `100%` (fills the mini track completely without visual overflow).
+  - Progress bar is colored with the **warning/high color** (red `#ef4444`).
+  - Percentage text displays: `"100%+ used · 0% left"`.
+  - Progress bar width is strictly capped at `100%` (fills the track completely without overflowing).
+  - Expanded view displays the full estimated count (e.g. `~231k est. / 200k`).
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
@@ -138,7 +138,7 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 6. Light and Dark Theme & Narrow Window
+### 6. Light and Dark Theme & Narrow Window (<600px)
 - **Preconditions:** In an active chat.
 - **Steps:**
   1. Switch Claude between Light and Dark mode (via Claude user menu -> Theme or OS dark mode).
@@ -146,7 +146,7 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 - **Expected Results:**
   - **Dark Mode:** Dark background (`rgba(30, 29, 28, 0.95)`), light text, subtle dark-theme border.
   - **Light Mode:** Light background (`rgba(255, 255, 255, 0.95)`), dark text, subtle light-theme border.
-  - **Narrow Window:** Panel shrinks proportionally with the composer card; no horizontal overflow or clipped text.
+  - **Narrow Window:** Panel shrinks proportionally with the composer card; zero horizontal overflow or clipped text down to 360px.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
@@ -166,9 +166,9 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-## Regression Verification Matrix (v0.5.2 & earlier)
+## Regression Verification Matrix
 
-### 1. Context Row Loading State vs Real Count (v0.5.2 Bug Fix)
+### 8. Context Row Loading State vs Real Count
 - **Preconditions:** Extension loaded, in any existing chat or new chat.
 - **Steps:**
   1. Open a new chat (`/new`) or switch to an existing chat from the sidebar.
@@ -177,9 +177,9 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
   4. In a genuinely empty chat, observe the loaded state.
   5. In a chat with existing messages, observe the calculated count.
 - **Expected Results:**
-  - **Before data arrives (or on new chat before fetch):** Context row displays `— / 200k` and `—` (NOT `~0 / 200k` and NOT `0%`).
-  - **Genuinely empty chat after load:** Displays `~0 / 200k` and `0%`.
-  - **Multi-message chat after load:** Displays real number (e.g. `~14k / 200k`, `~231k / 200k`).
+  - **Before data arrives (or on new chat before fetch):** Context row displays `— / 200k` and `—`.
+  - **Genuinely empty chat after load:** Displays `0% used · 100% left` (and `~0 est. / 200k` when expanded).
+  - **Multi-message chat after load:** Displays percentage used & left (e.g. `62% used · 38% left`) and accurate estimate.
   - Never flashes `~0 / 200k` before real data arrives.
 - **Result:**
   - [ ] Pass  [ ] Fail
@@ -187,44 +187,10 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 2. Over-Limit (>200k Tokens) Handling (v0.5.2)
-- **Preconditions:** Open a very long chat thread exceeding 200k context limit (e.g. ~231k tokens).
-- **Steps:**
-  1. Observe the Context row in the panel.
-- **Expected Results:**
-  - **Capped Bar:** Progress bar width is capped at 100% (never overflows container, no NaN).
-  - **Real Value Display:** Displays the real compact number (e.g. `~231k / 200k`).
-  - **Percentage:** Displays `>100%`.
-  - **Warning Color:** Bar dynamically switches to high/warning utilization color (`#ef4444` / preset high).
-  - No layout breaks or text clipping.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 3. Automatic Refresh & Lifecycle (v0.5.2)
-- **Preconditions:** In an active chat.
-- **Steps:**
-  1. Send a prompt to Claude and wait for the assistant response to complete streaming.
-  2. Switch to a different chat by clicking a conversation in the left sidebar.
-  3. Switch back to the previous chat.
-  4. Perform a hard page reload (`Cmd + Shift + R`).
-- **Expected Results:**
-  - **Completed Assistant Response:** Context tokens refresh automatically within ~1s after completion without manual reload.
-  - **Switching Chats:** Instantly shows `—` loading state, then populates with the new chat's token count.
-  - **Sidebar Navigation:** Click listener detects sidebar transitions and triggers immediate update.
-  - **Hard Reload:** Resolves `orgId` and mounts panel with accurate tokens.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 4. FREE-Plan Account Behavior (One Neutral Compact Line)
+### 9. FREE-Plan Account Behavior (One Neutral Compact Line)
 - **Preconditions:** Logged into Claude on a Free tier account (where `/usage` returns all-null values).
 - **Steps:**
-  1. Inspect the Usage Meter panel.
+  1. Inspect the Usage Meter panel in expanded view.
 - **Expected Results:**
   - Session 5h and Weekly 7d rows are **completely replaced** by ONE compact neutral line:
     *"Session & weekly limits not provided on this plan"*.
@@ -237,10 +203,10 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 4. PAID-Plan Account Behavior (When Limits are Present)
+### 10. PAID-Plan Account Behavior (When Limits are Present)
 - **Preconditions:** Logged into Claude on a Pro/Team account with rolling utilization windows.
 - **Steps:**
-  1. Inspect the Session 5h and Weekly 7d rows.
+  1. Inspect the Session 5h and Weekly 7d rows in expanded view.
 - **Expected Results:**
   - Session 5h row shows utilization percentage (e.g. `42.5%`), reset countdown (`resets in 2h 14m`), and temporal marker.
   - Weekly 7d row shows utilization percentage and reset countdown.
@@ -251,27 +217,26 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 5. Settings Drawer & Color Presets
+### 11. Settings Drawer & Color Presets
 - **Preconditions:** Panel in expanded mode.
 - **Steps:**
   1. Click the gear icon (`⚙`) in the header.
   2. Click different presets: **Default**, **Ocean**, **Sunset**, **Mono**, **High-contrast**.
   3. Adjust the background opacity slider and custom color pickers.
   4. If low contrast is set (e.g. black text on dark background), observe the amber contrast warning (`< 4.5:1`).
-  5. Toggle row visibility checkboxes (Context / Session / Weekly).
-  6. Click "Reset Position" and "Reset Defaults".
+  5. Adjust the Context Window override input.
+  6. Click "Reset Defaults".
 - **Expected Results:**
   - CSS variables update instantly inside the Shadow DOM.
-  - Row toggles show/hide corresponding metrics.
-  - "Reset Position" returns the panel to bottom-right.
-  - Settings persist in `localStorage.cc_settings`.
+  - Reset Defaults restores default colors and 200,000 token limit.
+  - Settings persist in `localStorage.cc_settings` inside `try/catch`.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 6. Org ID UUID Validation (Confirmed Fact 1)
+### 12. Org ID UUID Validation
 - **Preconditions:** DevTools Console open.
 - **Steps:**
   1. Enable debug logging: `localStorage.setItem('cc_debug', 'true')` and reload tab.
@@ -287,14 +252,13 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 7. Request Discipline & Throttling (Confirmed Fact 3)
+### 13. Request Discipline & Throttling
 - **Preconditions:** DevTools Network tab open (filter: `usage`).
 - **Steps:**
   1. Navigate between chats rapidly, switch tabs, and trigger route changes.
 - **Expected Results:**
   - Exactly one `/usage` request runs in-flight at a time (promise deduplication).
   - Background calls are throttled to a minimum 30 seconds interval.
-  - No rapid bursts of 10–14 requests within seconds.
   - One immediate refresh is permitted right after a streaming message completes.
 - **Result:**
   - [ ] Pass  [ ] Fail
@@ -302,62 +266,20 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 8. New Chat Page (`/new`)
+### 14. New Chat Page (`/new`)
 - **Preconditions:** Navigate to `https://claude.ai/new`.
 - **Steps:**
-  1. Observe the fixed panel.
+  1. Observe the inline panel above the composer card.
 - **Expected Results:**
-  - Context (token) row is cleanly hidden on empty/new chat pages (only shows when inside a conversation).
-  - Session and Weekly limits (or free plan notice) remain visible.
+  - Context row displays `— / 200k` and `—` loading state until messages exist.
+  - Session and Weekly limits (or free plan neutral notice) remain visible.
 - **Result:**
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
 ---
 
-### 9. SPA Route Navigation (Switching Chats in Sidebar)
-- **Preconditions:** Multiple conversations in sidebar.
-- **Steps:**
-  1. Click Chat A $\rightarrow$ Chat B $\rightarrow$ Chat C.
-- **Expected Results:**
-  - Panel never flickers or re-attaches abruptly.
-  - Context tokens update within ~500ms to reflect the active chat trunk.
-  - Single panel instance remains mounted throughout.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 10. Streaming Message & Live Cache Countdown
-- **Preconditions:** Active conversation.
-- **Steps:**
-  1. Send a short prompt.
-  2. Observe the cache pill during and immediately after streaming.
-- **Expected Results:**
-  - While generating, pill displays green "caching...".
-  - When generation completes, pill displays `cached 4:59` with circular SVG shrinking progress ring.
-  - `/usage` refreshes ~1 second after stream completion.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 11. Theme Switching (Light vs. Dark Mode)
-- **Preconditions:** Active conversation.
-- **Steps:**
-  1. Switch Claude user profile theme: Dark $\rightarrow$ Light $\rightarrow$ Dark.
-- **Expected Results:**
-  - Panel immediately updates background, border, text color, and progress bar hues to match.
-  - High contrast (>= 4.5:1) maintained.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 12. Brave Shields (UP vs. DOWN)
+### 15. Brave Shields (UP vs. DOWN)
 - **Preconditions:** Active tab in Brave.
 - **Steps:**
   1. Test with Brave Shields UP (standard blocking).
@@ -370,7 +292,7 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 13. Self-Healing Verification
+### 16. Self-Healing Verification
 - **Preconditions:** DevTools Elements tab.
 - **Steps:**
   1. Manually select `#cc-usage-meter-root` in the Elements panel and hit Delete.
@@ -382,20 +304,7 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-### 14. Debug Log Export
-- **Preconditions:** DevTools Console.
-- **Steps:**
-  1. Run: `window.__CC_COPY_DEBUG_LOG()`
-- **Expected Results:**
-  - Redacted JSON log copied to clipboard.
-  - Verifiable that all UUIDs, emails, tokens, and chat messages are replaced with `[REDACTED_...]` placeholders.
-- **Result:**
-  - [ ] Pass  [ ] Fail
-  - *Notes:* _____________________________
-
----
-
-### 15. Explicitly Unverified Items (Requires Paid Account)
+### 17. Explicitly Unverified Items (Requires Paid Account)
 > [!NOTE]
 > Per project constraints, testing cannot be performed on a live logged-in paid claude.ai session. The following remain unverified against live production accounts and rely on confirmed upstream shapes / synthetic fixtures:
 1. **Live Paid Plan `/usage` Payload Shape:**
@@ -404,3 +313,5 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 2. **Live SSE `message_limit` Stream Event:**
    - Real-time window updates emitted during streaming completions on paid plans.
    - Interception logic and normalization covered via `sse_message_limit.synthetic.json`.
+3. **Real Claude Model Context Windows:**
+   - Claude web responses do not supply a context window limit or model ID field in captured conversation payloads.

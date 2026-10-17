@@ -299,6 +299,56 @@
 		};
 	}
 
+	function resolveContextWindow(userOverride, detectedLimit, fallback = (CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000)) {
+		if (typeof userOverride === 'number' && !isNaN(userOverride) && userOverride > 0) {
+			return userOverride;
+		}
+		if (typeof detectedLimit === 'number' && !isNaN(detectedLimit) && detectedLimit > 0) {
+			return detectedLimit;
+		}
+		if (typeof fallback === 'number' && !isNaN(fallback) && fallback > 0) {
+			return fallback;
+		}
+		return 200000;
+	}
+
+	function scanPayloadDebugKeys(data) {
+		if (!data || typeof data !== 'object') return null;
+		const topLevelKeys = Object.keys(data);
+		const firstMessage = Array.isArray(data.chat_messages) && data.chat_messages[0] && typeof data.chat_messages[0] === 'object'
+			? data.chat_messages[0]
+			: null;
+		const chatMessageKeys = firstMessage ? Object.keys(firstMessage) : [];
+
+		const matchRegex = /context|window|limit|model/i;
+		const matches = {};
+
+		function scanObject(obj, prefix = '') {
+			if (!obj || typeof obj !== 'object') return;
+			for (const [k, v] of Object.entries(obj)) {
+				const fullKey = prefix ? `${prefix}.${k}` : k;
+				if (matchRegex.test(k)) {
+					if (typeof v === 'number' && !isNaN(v)) {
+						matches[fullKey] = v;
+					} else if (typeof v === 'string' && v.length <= 60 && !v.includes(' ') && !v.includes('\n')) {
+						matches[fullKey] = v;
+					}
+				}
+			}
+		}
+
+		scanObject(data);
+		if (firstMessage) {
+			scanObject(firstMessage, 'chat_messages[0]');
+		}
+
+		return {
+			topLevelKeys,
+			chatMessageKeys,
+			matches
+		};
+	}
+
 	const exp = {
 		ROOT_MESSAGE_ID,
 		CONTEXT_ROW_TOOLTIP,
@@ -309,7 +359,9 @@
 		stringifyMessageCountables,
 		computeConversationMetrics,
 		formatTokens,
-		formatContextUtilization
+		formatContextUtilization,
+		resolveContextWindow,
+		scanPayloadDebugKeys
 	};
 
 	if (typeof module !== 'undefined' && module.exports) {

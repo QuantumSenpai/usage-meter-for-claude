@@ -17,7 +17,9 @@ const {
 	stringifyMessageCountables,
 	computeConversationMetrics,
 	formatTokens,
-	formatContextUtilization
+	formatContextUtilization,
+	resolveContextWindow,
+	scanPayloadDebugKeys
 } = require('../src/content/tokens.js');
 
 function loadFixture(filename) {
@@ -279,6 +281,76 @@ async function test(name, fn) {
 	// Test 11: CONTEXT_WINDOW_TOKENS named constant
 	await test('Constant: CONTEXT_WINDOW_TOKENS is defined as 200,000 default', () => {
 		assert.strictEqual(CONTEXT_WINDOW_TOKENS, 200000);
+	});
+
+	// Test 12: resolveContextWindow priority order
+	await test('Context Window Resolution: priority order = user override > detected limit > default 200,000', () => {
+		// 1. User override takes top priority
+		assert.strictEqual(resolveContextWindow(300000, 150000, 200000), 300000);
+		assert.strictEqual(resolveContextWindow(100000, null, 200000), 100000);
+
+		// 2. Detected limit takes priority over default if override is absent/invalid
+		assert.strictEqual(resolveContextWindow(null, 150000, 200000), 150000);
+		assert.strictEqual(resolveContextWindow(undefined, 180000, 200000), 180000);
+		assert.strictEqual(resolveContextWindow(0, 160000, 200000), 160000);
+		assert.strictEqual(resolveContextWindow(NaN, 140000, 200000), 140000);
+
+		// 3. Default (200000) when neither override nor detected limit is provided
+		assert.strictEqual(resolveContextWindow(null, null, 200000), 200000);
+		assert.strictEqual(resolveContextWindow(undefined, undefined, 200000), 200000);
+		assert.strictEqual(resolveContextWindow(null, null), 200000);
+	});
+
+	// Test 13: scanPayloadDebugKeys returns key names only for payloads
+	await test('Diagnostic Key Scan: returns key names only and matches numeric/short-model fields without leaking chat text', () => {
+		const tree = loadFixture('conversation_tree.json');
+		const scan = scanPayloadDebugKeys(tree);
+
+		assert.ok(scan, 'Scan result should not be null');
+		// topLevelKeys must be an array of key name strings only
+		assert.deepStrictEqual(scan.topLevelKeys, [
+			'uuid',
+			'name',
+			'created_at',
+			'updated_at',
+			'current_leaf_message_uuid',
+			'chat_messages'
+		]);
+
+		// chatMessageKeys must be an array of key name strings only
+		assert.deepStrictEqual(scan.chatMessageKeys, [
+			'uuid',
+			'parent_message_uuid',
+			'sender',
+			'created_at',
+			'text',
+			'content',
+			'attachments'
+		]);
+
+		// Test with mock object containing model id, window number, and long chat text
+		const mockPayload = {
+			model: 'claude-3-7-sonnet',
+			context_window_size: 200000,
+			some_long_text: 'This is a long chat sentence that should not be extracted as a match',
+			nested_limit: 50000,
+			chat_messages: [
+				{
+					model_version: 'claude-3.5',
+					text: 'Chat message content that must never be in matches',
+					sender: 'human'
+				}
+			]
+		};
+
+		const mockScan = scanPayloadDebugKeys(mockPayload);
+		assert.strictEqual(mockScan.matches['model'], 'claude-3-7-sonnet');
+		assert.strictEqual(mockScan.matches['context_window_size'], 200000);
+		assert.strictEqual(mockScan.matches['nested_limit'], 50000);
+		assert.strictEqual(mockScan.matches['chat_messages[0].model_version'], 'claude-3.5');
+		// Non-matching or text with spaces must never be in matches
+		assert.strictEqual('some_long_text' in mockScan.matches, false);
+		assert.strictEqual('chat_messages[0].text' in mockScan.matches, false);
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

@@ -2,7 +2,7 @@
 
 An unofficial browser extension that shows token count, cache timer, and usage bars on claude.ai.
 
-> **Status:** Version 0.5.0. Updated for the current claude.ai with Manifest V3 MAIN-world early interception, resilient Shadow DOM mounting, and floating fallback mode.
+> **Status:** Version 0.5.6. Updated for the current claude.ai with Manifest V3 MAIN-world early interception, resilient inline Shadow DOM mounting directly above the composer card, and thin line / expandable view.
 > Not affiliated with or endorsed by Anthropic.
 
 ## Based on
@@ -11,14 +11,15 @@ This project is a modified version of [claude-counter](https://github.com/she-ll
 
 ## Features
 
-- **Context token count**: Approximate token count for the current conversation, with a mini progress bar against the 200k context limit (labeled `~`)
-- **Prompt cache timer**: Countdown pill showing how long the conversation remains cached (5-minute sliding window) with an animated circular progress indicator
-- **Usage bars**: Session (5-hour) and weekly (7-day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
-- **Shadow DOM style isolation**: Zero CSS conflicts with Claude's layout or Tailwind resets
-- **Dynamic color ramps**: Smooth teal/green (0–60%) -> amber (60–85%) -> red (85–100%) utilization ramps with gentle glow and pulse above 90%
-- **Theme-aware**: Automatically mirrors Claude's light and dark themes
-- **Mount resilience**: Automatically docks inline near chat input controls; if controls are deferred or unavailable within 3 seconds, gracefully docks as a bottom-right floating panel so it never fails silently
-- **Collapsed mode**: Toggle into a single compact status line (`~24k ctx · 42% 5h · 18% 7d`) with persistent state
+- **Inline Mount Above Composer**: Docks directly above Claude's composer input card in normal document flow. Sits as an inline sibling with zero fixed overlays and zero floating drag handles.
+- **Context Token Count & Utilization**: Displays chat size and utilization percentages (`62% used · 38% left`) vs the context window (default 200,000 tokens with manual override setting in the gear drawer).
+- **Utilization Tier Colors**: `<60%` low color (emerald green `#10b981`), `60% to <90%` mid warning color (amber orange `#f59e0b`), and `>=90%` high color (crimson red `#ef4444`). Over-100% chats cap progress bar at 100% and show `100%+ used · 0% left` while preserving the full estimate in the expanded view.
+- **Fast Post-Stream Updates**: Automatically triggers an immediate conversation refetch as soon as the assistant stops streaming, using stale-while-revalidate to prevent UI flickering, with an automatic single 1500ms retry if the server has not yet committed the message.
+- **Prompt Cache Timer**: Countdown timer showing how long the conversation remains cached (5-minute sliding window) with an animated circular progress indicator inside the expandable drawer.
+- **Usage Bars**: Session (5-hour) and weekly (7-day) usage from Claude's native API, with progress bars and reset countdowns. Free plan accounts display a single neutral compact notice when usage limits are null.
+- **Shadow DOM Style Isolation**: Zero CSS conflicts with Claude's layout or Tailwind resets.
+- **Theme-Aware**: Automatically mirrors Claude's light and dark themes.
+- **Compact Thin Line Mode**: Default collapsed view (~32px height) shows `Context [bar] 62% used · 38% left`, expanding on demand to reveal full details and controls.
 
 ## Installation
 
@@ -30,37 +31,35 @@ This project is a modified version of [claude-counter](https://github.com/she-ll
 4. Click **Load unpacked** and select this repository's folder.
 5. Open or reload `https://claude.ai`.
 
+> **Brave Browser Note:** The extension functions seamlessly with default Brave Shields. When making updates, click the Reload icon under `brave://extensions` and perform a hard refresh (`Cmd+Shift+R` or `Ctrl+Shift+R`) on your active `claude.ai` tab.
+
 ### Userscript
 
 1. Install [`userscript/claude-counter.user.js`](./userscript/claude-counter.user.js) with a userscript manager (e.g. Tampermonkey, Violentmonkey).
 
 ## How it works
 
-- **Fixed Draggable Panel:** Mounts independently of Claude's internal DOM structure in an isolated ShadowRoot. Clamped to the viewport, remembers custom dragged coordinates, and includes a compact pill minimize mode.
-- **Self-Healing Mount:** A lightweight observer and heartbeat ensure the panel remains mounted and re-attaches within ~1s across single-page transitions.
-- **Request Discipline:** Calls to `/usage` are deduplicated so only one request is in-flight at a time, throttled to a minimum 30-second interval (with one immediate refresh after an assistant message completes), with exponential backoff on errors.
-- **Plan-Aware Usage Model:** Queries Claude's `/api/organizations/{orgId}/usage` endpoint using your active session. Free-plan accounts typically return all-null limits; the extension recognizes this as a valid empty state rather than an error. When live SSE `message_limit` chunks are received, they fill utilization bars in real time.
-- **Token counting:** Uses a vendored `o200k_base` tokenizer for approximate token counting, yielding asynchronously across long message trunks to avoid main-thread stuttering. Context tokens display only when an active conversation exists.
+- **Inline Mounting & Self-Healing:** Anchored to `[data-testid="chat-input"]`, dynamically resolves the surrounding composer card (`bg-surface-3` or 6th ancestor), and inserts host `#cc-usage-meter-root` as the card's previous sibling in normal flow. Lightweight MutationObservers ensure the host remains in place across SPA transitions.
+- **Request Discipline:** Calls to `/usage` are deduplicated (single in-flight promise), throttled to a minimum 30-second interval (with one immediate refresh after an assistant message completes), with exponential backoff on errors.
+- **Plan-Aware Usage Model:** Queries Claude's `/api/organizations/{orgId}/usage` endpoint using your active session. Free-plan accounts typically return all-null limits; the extension recognizes this as a valid empty state rather than an error. Live SSE `message_limit` chunks update utilization bars in real time.
+- **Token Counting:** Uses a vendored `o200k_base` tokenizer for approximate token counting, yielding asynchronously across long message trunks to avoid main-thread stuttering. Context tokens display only when an active conversation exists.
 
 > **Note:** Because this extension relies on claude.ai's undocumented internals and private API endpoints, free plans may show no usage windows, and Anthropic UI updates may require occasional maintenance updates.
 
 ## Privacy
 
 - **100% Local:** All data processing and token counting happens locally in your browser.
-- **No telemetry / No external servers:** Makes requests strictly to `claude.ai` with your active cookies. No third-party network requests or analytics.
+- **No Telemetry / No External Servers:** Makes requests strictly to `claude.ai` with your active cookies. No third-party network requests or analytics.
 
 ## Debugging
 
-To view diagnostics or report an issue:
+To view diagnostics:
 1. Open DevTools Console on `claude.ai`.
 2. Enable debug logging:
    ```javascript
    localStorage.setItem('cc_debug', 'true');
    ```
-3. Refresh the page. To copy a redacted diagnostic log to your clipboard:
-   ```javascript
-   window.__CC_COPY_DEBUG_LOG();
-   ```
+3. Refresh the page. Redacted diagnostic lines (`[UsageMeter:Debug]`) will print directly to the browser Console for timing, state changes, and key names.
    (All organization UUIDs, emails, tokens, and chat message contents are automatically sanitized).
 
 ## Credits
