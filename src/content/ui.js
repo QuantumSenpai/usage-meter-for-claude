@@ -28,135 +28,225 @@
 		return `${days}d ${remHours}h`;
 	}
 
-	function getColorForPct(pct) {
-		const clamped = Math.max(0, Math.min(100, pct));
-		if (clamped <= 60) {
-			// Teal/Green: 0% -> hue 168, 60% -> hue 155
-			const t = clamped / 60;
-			const hue = 168 - t * 13;
-			return `hsl(${hue}, 60%, 44%)`;
+	// Preset color palettes
+	const PRESETS = {
+		default: {
+			name: 'Default',
+			low: '#10b981',
+			mid: '#f59e0b',
+			high: '#ef4444',
+			accent: '#3b82f6'
+		},
+		ocean: {
+			name: 'Ocean',
+			low: '#06b6d4',
+			mid: '#3b82f6',
+			high: '#6366f1',
+			accent: '#0284c7'
+		},
+		sunset: {
+			name: 'Sunset',
+			low: '#f43f5e',
+			mid: '#d946ef',
+			high: '#8b5cf6',
+			accent: '#ec4899'
+		},
+		mono: {
+			name: 'Mono',
+			low: '#9ca3af',
+			mid: '#6b7280',
+			high: '#374151',
+			accent: '#4b5563'
+		},
+		highContrast: {
+			name: 'High-contrast',
+			low: '#00e676',
+			mid: '#ffea00',
+			high: '#ff1744',
+			accent: '#00e5ff'
 		}
-		if (clamped <= 85) {
-			// Amber ramp: 60% -> hue 155, 85% -> hue 38
-			const t = (clamped - 60) / 25;
-			const hue = 155 - t * 117;
-			const sat = 60 + t * 32;
-			return `hsl(${hue}, ${sat}%, 48%)`;
+	};
+
+	function parseHexColor(hex) {
+		if (!hex || typeof hex !== 'string') return null;
+		let clean = hex.replace('#', '').trim();
+		if (clean.length === 3) {
+			clean = clean.split('').map((c) => c + c).join('');
 		}
-		// Red ramp: 85% -> hue 38, 100% -> hue 354
-		const t = (clamped - 85) / 15;
-		const hue = 38 - t * 44; // to ~-6 deg which is ~354
-		const normalHue = hue < 0 ? hue + 360 : hue;
-		return `hsl(${normalHue}, 80%, 52%)`;
+		if (clean.length !== 6) return null;
+		const r = parseInt(clean.slice(0, 2), 16);
+		const g = parseInt(clean.slice(2, 4), 16);
+		const b = parseInt(clean.slice(4, 6), 16);
+		return { r, g, b };
+	}
+
+	function getRelativeLuminance({ r, g, b }) {
+		const normalize = (c) => {
+			const s = c / 255;
+			return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+		};
+		return 0.2126 * normalize(r) + 0.7152 * normalize(g) + 0.0722 * normalize(b);
+	}
+
+	function getContrastRatio(rgb1, rgb2) {
+		if (!rgb1 || !rgb2) return 21;
+		const l1 = getRelativeLuminance(rgb1);
+		const l2 = getRelativeLuminance(rgb2);
+		const lighter = Math.max(l1, l2);
+		const darker = Math.min(l1, l2);
+		return (lighter + 0.05) / (darker + 0.05);
+	}
+
+	function interpolateColor(color1, color2, factor) {
+		const c1 = parseHexColor(color1) || { r: 16, g: 185, b: 129 };
+		const c2 = parseHexColor(color2) || { r: 239, g: 68, b: 68 };
+		const f = Math.max(0, Math.min(1, factor));
+		const r = Math.round(c1.r + (c2.r - c1.r) * f);
+		const g = Math.round(c1.g + (c2.g - c1.g) * f);
+		const b = Math.round(c1.b + (c2.b - c1.b) * f);
+		return `rgb(${r}, ${g}, ${b})`;
 	}
 
 	const UI_STYLES = `
 		:host {
-			display: block;
+			all: initial;
 			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 			font-size: 12px;
 			line-height: 1.4;
 			box-sizing: border-box;
 			user-select: none;
 			-webkit-font-smoothing: antialiased;
-			--cc-bg-light: rgba(255, 255, 255, 0.92);
-			--cc-border-light: rgba(0, 0, 0, 0.08);
-			--cc-text-light: #1f1e1d;
-			--cc-text-muted-light: #706e6b;
-			--cc-bar-bg-light: rgba(0, 0, 0, 0.06);
-			--cc-marker-light: rgba(0, 0, 0, 0.35);
-
-			--cc-bg-dark: rgba(30, 29, 28, 0.92);
-			--cc-border-dark: rgba(255, 255, 255, 0.1);
-			--cc-text-dark: #f0eee9;
-			--cc-text-muted-dark: #989692;
-			--cc-bar-bg-dark: rgba(255, 255, 255, 0.08);
-			--cc-marker-dark: rgba(255, 255, 255, 0.45);
+			z-index: 2147483647;
+			position: fixed;
 		}
 
 		*, *::before, *::after {
 			box-sizing: border-box;
 		}
 
-		.cc-meter-card {
-			background: var(--cc-bg);
-			border: 1px solid var(--cc-border);
+		/* Main Panel Card */
+		.cc-panel {
+			position: fixed;
+			background: var(--cc-bg, rgba(30, 29, 28, 0.92));
+			border: 1px solid var(--cc-border, rgba(255, 255, 255, 0.12));
 			border-radius: 8px;
-			padding: 8px 12px;
-			margin: 6px 0;
-			color: var(--cc-text);
-			backdrop-filter: blur(10px);
-			-webkit-backdrop-filter: blur(10px);
-			transition: all 200ms ease;
+			color: var(--cc-text, #f0eee9);
+			box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+			backdrop-filter: blur(12px);
+			-webkit-backdrop-filter: blur(12px);
+			transition: box-shadow 200ms ease, opacity 200ms ease;
 			font-feature-settings: "tnum";
 			font-variant-numeric: tabular-nums;
-		}
-
-		/* Floating Fallback Placement */
-		.cc-meter-card--floating {
-			position: fixed;
-			bottom: 18px;
-			right: 18px;
 			width: 290px;
-			max-width: calc(100vw - 36px);
-			z-index: 99999;
-			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
-			margin: 0;
+			max-width: calc(100vw - 20px);
+			overflow: hidden;
 		}
 
-		/* Theme classes applied to card */
+		.cc-panel--pill {
+			width: auto;
+			min-width: 130px;
+			border-radius: 9999px;
+			padding: 4px 10px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+		}
+
+		.cc-panel--pill:hover {
+			border-color: var(--cc-accent, #3b82f6);
+		}
+
+		/* Themes */
 		.cc-theme-light {
-			--cc-bg: var(--cc-bg-light);
-			--cc-border: var(--cc-border-light);
-			--cc-text: var(--cc-text-light);
-			--cc-text-muted: var(--cc-text-muted-light);
-			--cc-bar-bg: var(--cc-bar-bg-light);
-			--cc-marker: var(--cc-marker-light);
+			--cc-bg-default: rgba(255, 255, 255, 0.92);
+			--cc-border: rgba(0, 0, 0, 0.1);
+			--cc-text: #1f1e1d;
+			--cc-text-muted: #6b6966;
+			--cc-bar-bg: rgba(0, 0, 0, 0.07);
+			--cc-marker: rgba(0, 0, 0, 0.4);
 		}
 
 		.cc-theme-dark {
-			--cc-bg: var(--cc-bg-dark);
-			--cc-border: var(--cc-border-dark);
-			--cc-text: var(--cc-text-dark);
-			--cc-text-muted: var(--cc-text-muted-dark);
-			--cc-bar-bg: var(--cc-bar-bg-dark);
-			--cc-marker: var(--cc-marker-dark);
+			--cc-bg-default: rgba(30, 29, 28, 0.92);
+			--cc-border: rgba(255, 255, 255, 0.12);
+			--cc-text: #f0eee9;
+			--cc-text-muted: #9c9a95;
+			--cc-bar-bg: rgba(255, 255, 255, 0.08);
+			--cc-marker: rgba(255, 255, 255, 0.5);
 		}
 
-		/* Header */
+		/* Header & Drag Handle */
 		.cc-header {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			gap: 8px;
+			padding: 7px 10px;
+			cursor: grab;
+			border-bottom: 1px solid transparent;
+			transition: background-color 150ms ease;
+		}
+
+		.cc-header:active {
+			cursor: grabbing;
+		}
+
+		.cc-header:hover {
+			background: rgba(128, 128, 128, 0.06);
 		}
 
 		.cc-header-left {
 			display: flex;
 			align-items: center;
-			gap: 8px;
+			gap: 6px;
 			min-width: 0;
 		}
 
 		.cc-title {
 			font-size: 11px;
 			font-weight: 600;
-			letter-spacing: 0.02em;
+			letter-spacing: 0.03em;
 			text-transform: uppercase;
 			color: var(--cc-text-muted);
+			pointer-events: none;
 		}
 
+		.cc-header-right {
+			display: flex;
+			align-items: center;
+			gap: 3px;
+		}
+
+		.cc-btn {
+			background: none;
+			border: none;
+			padding: 3px;
+			color: var(--cc-text-muted);
+			cursor: pointer;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			transition: background 150ms ease, color 150ms ease;
+		}
+
+		.cc-btn:hover {
+			background: rgba(128, 128, 128, 0.14);
+			color: var(--cc-text);
+		}
+
+		/* Prompt Cache Pill */
 		.cc-cache-pill {
 			display: inline-flex;
 			align-items: center;
 			gap: 4px;
-			padding: 2px 6px;
+			padding: 1px 6px;
 			border-radius: 12px;
 			font-size: 10px;
 			font-weight: 500;
-			background: rgba(16, 185, 129, 0.12);
+			background: rgba(16, 185, 129, 0.14);
 			color: #10b981;
-			transition: opacity 200ms ease;
 		}
 
 		.cc-cache-pill.cc-hidden {
@@ -176,7 +266,7 @@
 
 		.cc-cache-ring-fill {
 			fill: none;
-			stroke: #10b981;
+			stroke: currentColor;
 			stroke-width: 2;
 			stroke-linecap: round;
 			stroke-dasharray: 37.7;
@@ -184,70 +274,43 @@
 			transition: stroke-dashoffset 900ms linear;
 		}
 
-		.cc-header-right {
-			display: flex;
-			align-items: center;
-			gap: 6px;
-		}
-
-		.cc-collapsed-summary {
-			display: none;
-			font-size: 11px;
-			color: var(--cc-text-muted);
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-
-		.cc-mode-collapsed .cc-collapsed-summary {
-			display: inline-block;
-		}
-
-		.cc-icon-btn {
-			background: none;
-			border: none;
-			padding: 2px 4px;
-			color: var(--cc-text-muted);
-			cursor: pointer;
-			border-radius: 4px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			transition: background 150ms ease, color 150ms ease;
-		}
-
-		.cc-icon-btn:hover {
-			background: var(--cc-bar-bg);
-			color: var(--cc-text);
-		}
-
-		.cc-chevron {
-			width: 12px;
-			height: 12px;
-			transition: transform 200ms ease;
-		}
-
-		.cc-mode-collapsed .cc-chevron {
-			transform: rotate(-90deg);
-		}
-
-		/* Rows Container */
-		.cc-rows {
+		/* Content Body */
+		.cc-body {
+			padding: 4px 10px 10px 10px;
 			display: flex;
 			flex-direction: column;
-			gap: 8px;
-			margin-top: 8px;
+			gap: 7px;
 		}
 
-		.cc-mode-collapsed .cc-rows {
+		.cc-panel--pill .cc-body,
+		.cc-panel--pill .cc-header {
 			display: none;
 		}
 
-		/* Metric Row */
+		/* Pill content for compact mode */
+		.cc-pill-content {
+			display: none;
+			align-items: center;
+			gap: 6px;
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--cc-text);
+			white-space: nowrap;
+		}
+
+		.cc-panel--pill .cc-pill-content {
+			display: inline-flex;
+		}
+
+		/* Metric Rows */
 		.cc-row {
 			display: flex;
 			flex-direction: column;
-			gap: 4px;
+			gap: 3px;
+		}
+
+		.cc-row.cc-hidden {
+			display: none;
 		}
 
 		.cc-row-meta {
@@ -284,12 +347,11 @@
 			text-align: right;
 		}
 
-		/* Thin progress bar */
 		.cc-bar-track {
 			position: relative;
 			height: 6px;
 			background: var(--cc-bar-bg);
-			border-radius: 3px;
+			border-radius: 4px;
 			overflow: hidden;
 			width: 100%;
 		}
@@ -297,8 +359,8 @@
 		.cc-bar-fill {
 			height: 100%;
 			width: 0%;
-			border-radius: 3px;
-			background: #10b981;
+			border-radius: 4px;
+			background: var(--cc-color-low, #10b981);
 			transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1), background-color 300ms ease;
 		}
 
@@ -309,7 +371,7 @@
 
 		@keyframes cc-pulse {
 			0%, 100% { opacity: 1; }
-			50% { opacity: 0.8; }
+			50% { opacity: 0.78; }
 		}
 
 		.cc-bar-marker {
@@ -327,24 +389,57 @@
 			display: none;
 		}
 
-		/* Unavailable state */
-		.cc-unavailable-banner {
+		/* State: Empty Plan Notice */
+		.cc-empty-notice {
+			display: none;
+			align-items: center;
+			gap: 6px;
+			padding: 6px 8px;
+			background: rgba(128, 128, 128, 0.07);
+			border-radius: 4px;
+			font-size: 11px;
+			color: var(--cc-text-muted);
+		}
+
+		.cc-state-empty .cc-empty-notice {
+			display: flex;
+		}
+
+		.cc-info-icon {
+			cursor: help;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			border: 1px solid currentColor;
+			font-size: 9px;
+			font-weight: bold;
+			flex-shrink: 0;
+		}
+
+		/* State: Error */
+		.cc-error-notice {
 			display: none;
 			align-items: center;
 			justify-content: space-between;
-			padding: 4px 0;
+			padding: 6px 8px;
+			background: rgba(239, 68, 68, 0.12);
+			border: 1px solid rgba(239, 68, 68, 0.2);
+			border-radius: 4px;
 			font-size: 11px;
-			color: #e11d48;
+			color: #ef4444;
 		}
 
-		.cc-state-unavailable .cc-unavailable-banner {
+		.cc-state-error .cc-error-notice {
 			display: flex;
 		}
 
 		.cc-retry-btn {
 			background: none;
 			border: 1px solid currentColor;
-			border-radius: 4px;
+			border-radius: 3px;
 			padding: 1px 6px;
 			color: inherit;
 			font-size: 10px;
@@ -352,45 +447,113 @@
 		}
 
 		.cc-retry-btn:hover {
-			background: rgba(225, 29, 72, 0.1);
+			background: rgba(239, 68, 68, 0.15);
 		}
 
-		/* Loading shimmer state */
-		.cc-state-loading .cc-bar-fill {
-			width: 100% !important;
-			background: linear-gradient(90deg, var(--cc-bar-bg) 25%, rgba(128,128,128,0.2) 50%, var(--cc-bar-bg) 75%);
-			background-size: 200% 100%;
-			animation: cc-shimmer 1.5s infinite;
+		/* Settings Drawer */
+		.cc-settings-drawer {
+			display: none;
+			flex-direction: column;
+			gap: 8px;
+			padding: 8px 10px 10px 10px;
+			border-top: 1px solid var(--cc-border);
+			background: rgba(0, 0, 0, 0.04);
 		}
 
-		@keyframes cc-shimmer {
-			0% { background-position: 200% 0; }
-			100% { background-position: -200% 0; }
+		.cc-settings-drawer.cc-open {
+			display: flex;
 		}
 
-		/* Hover Tooltip */
-		.cc-tooltip {
-			position: absolute;
-			z-index: 100000;
-			background: rgba(18, 18, 18, 0.95);
-			color: #fff;
-			padding: 6px 10px;
-			border-radius: 6px;
+		.cc-settings-title {
+			font-size: 10px;
+			font-weight: 600;
+			text-transform: uppercase;
+			color: var(--cc-text-muted);
+			letter-spacing: 0.04em;
+		}
+
+		.cc-presets-grid {
+			display: grid;
+			grid-template-columns: repeat(3, 1fr);
+			gap: 4px;
+		}
+
+		.cc-preset-btn {
+			background: rgba(128, 128, 128, 0.1);
+			border: 1px solid var(--cc-border);
+			border-radius: 4px;
+			padding: 3px 4px;
+			color: var(--cc-text);
+			font-size: 10px;
+			cursor: pointer;
+			text-align: center;
+			transition: background 150ms ease, border-color 150ms ease;
+		}
+
+		.cc-preset-btn:hover {
+			border-color: var(--cc-accent, #3b82f6);
+			background: rgba(128, 128, 128, 0.18);
+		}
+
+		.cc-settings-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
 			font-size: 11px;
-			line-height: 1.4;
-			pointer-events: none;
-			white-space: pre-line;
-			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-			opacity: 0;
-			transition: opacity 150ms ease;
 		}
 
-		.cc-theme-light .cc-tooltip {
-			background: rgba(30, 30, 30, 0.95);
+		.cc-settings-row input[type="color"] {
+			border: none;
+			width: 22px;
+			height: 20px;
+			border-radius: 3px;
+			cursor: pointer;
+			background: none;
+		}
+
+		.cc-settings-row input[type="range"] {
+			width: 110px;
+		}
+
+		.cc-contrast-alert {
+			display: none;
+			padding: 4px 6px;
+			border-radius: 4px;
+			background: rgba(245, 158, 11, 0.15);
+			border: 1px solid rgba(245, 158, 11, 0.3);
+			color: #d97706;
+			font-size: 10px;
+			line-height: 1.3;
+		}
+
+		.cc-contrast-alert.cc-show {
+			display: block;
+		}
+
+		.cc-settings-actions {
+			display: flex;
+			gap: 6px;
+			margin-top: 4px;
+		}
+
+		.cc-btn-secondary {
+			flex: 1;
+			background: rgba(128, 128, 128, 0.1);
+			border: 1px solid var(--cc-border);
+			border-radius: 4px;
+			padding: 4px;
+			font-size: 10px;
+			color: var(--cc-text);
+			cursor: pointer;
+			text-align: center;
+		}
+
+		.cc-btn-secondary:hover {
+			background: rgba(128, 128, 128, 0.2);
 		}
 
 		@media (prefers-reduced-motion: reduce) {
-			.cc-bar-fill, .cc-cache-ring-fill, .cc-chevron, .cc-meter-card {
+			.cc-bar-fill, .cc-cache-ring-fill, .cc-panel {
 				transition: none !important;
 				animation: none !important;
 			}
@@ -404,21 +567,86 @@
 
 			this.rootElement = null;
 			this.shadowRoot = null;
-			this.isFloating = false;
-			this.isCollapsed = localStorage.getItem('cc_collapsed') === 'true';
+			this.panel = null;
 
-			// State values
+			// Position & State
+			this.isPill = localStorage.getItem('cc_pill') === 'true';
+			this.settingsOpen = false;
+			this.pos = this._loadSavedPos();
+
+			// Settings
+			this.settings = this._loadSavedSettings();
+
+			// Metrics
 			this.metrics = {
-				context: { tokens: 0, pct: 0, formatted: '~0 tokens' },
-				session: { pct: 0, resetsAt: null, windowStart: null, raw: null },
-				weekly: { pct: 0, resetsAt: null, windowStart: null, raw: null },
+				hasConversation: false,
+				context: { tokens: 0, pct: null, formatted: '~0 / 200k' },
+				session: { pct: null, resetsAt: null, windowStart: null },
+				weekly: { pct: null, resetsAt: null, windowStart: null },
 				cachedUntil: null,
 				isPendingCache: false,
-				unavailableReason: null
+				state: 'empty',
+				errorReason: null
 			};
 
-			this.domElements = {};
-			this.currentAnchor = null;
+			this.dom = {};
+			this._dragState = null;
+		}
+
+		_loadSavedPos() {
+			try {
+				const saved = localStorage.getItem('cc_panel_pos');
+				if (saved) {
+					const parsed = JSON.parse(saved);
+					if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+						return parsed;
+					}
+				}
+			} catch {
+				// ignore
+			}
+			return null; // default bottom-right
+		}
+
+		_savePos(pos) {
+			this.pos = pos;
+			try {
+				localStorage.setItem('cc_panel_pos', JSON.stringify(pos));
+			} catch {
+				// ignore
+			}
+		}
+
+		_loadSavedSettings() {
+			const defaults = {
+				preset: 'default',
+				lowColor: PRESETS.default.low,
+				midColor: PRESETS.default.mid,
+				highColor: PRESETS.default.high,
+				accentColor: PRESETS.default.accent,
+				opacity: 0.94,
+				showContext: true,
+				showSession: true,
+				showWeekly: true
+			};
+			try {
+				const saved = localStorage.getItem('cc_settings');
+				if (saved) {
+					return Object.assign(defaults, JSON.parse(saved));
+				}
+			} catch {
+				// ignore
+			}
+			return defaults;
+		}
+
+		_saveSettings() {
+			try {
+				localStorage.setItem('cc_settings', JSON.stringify(this.settings));
+			} catch {
+				// ignore
+			}
+			this.applyThemeAndSettings();
 		}
 
 		initialize() {
@@ -432,15 +660,22 @@
 			styleTag.textContent = UI_STYLES;
 			this.shadowRoot.appendChild(styleTag);
 
-			const card = document.createElement('div');
-			card.className = `cc-meter-card ${this.isCollapsed ? 'cc-mode-collapsed' : 'cc-mode-expanded'}`;
-			this.domElements.card = card;
+			const panel = document.createElement('div');
+			panel.className = `cc-panel ${this.isPill ? 'cc-panel--pill' : ''}`;
+			this.panel = panel;
 
-			card.innerHTML = `
-				<div class="cc-header">
+			panel.innerHTML = `
+				<!-- Collapsed Pill View -->
+				<div class="cc-pill-content" id="cc-pill-content" title="Click to expand Usage Meter">
+					<span style="color: var(--cc-accent, #3b82f6);">⚡</span>
+					<span id="cc-pill-summary">Usage</span>
+				</div>
+
+				<!-- Standard Header -->
+				<div class="cc-header" id="cc-drag-handle" title="Drag to move panel">
 					<div class="cc-header-left">
-						<span class="cc-title">Usage</span>
-						<div class="cc-cache-pill cc-hidden" id="cc-cache-pill" title="Conversation prompt cache timer">
+						<span class="cc-title">Usage Meter</span>
+						<div class="cc-cache-pill cc-hidden" id="cc-cache-pill" title="Prompt cache window: 5 min remaining">
 							<svg class="cc-cache-ring" width="14" height="14" viewBox="0 0 16 16">
 								<circle class="cc-cache-ring-bg" cx="8" cy="8" r="6" />
 								<circle class="cc-cache-ring-fill" id="cc-cache-fill" cx="8" cy="8" r="6" />
@@ -449,22 +684,32 @@
 						</div>
 					</div>
 					<div class="cc-header-right">
-						<span class="cc-collapsed-summary" id="cc-summary"></span>
-						<button class="cc-icon-btn" id="cc-debug-btn" title="Copy Debug Log" style="display: none;">
+						<button class="cc-btn" id="cc-debug-btn" title="Copy Diagnostic Log" style="display: none;">
 							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
 						</button>
-						<button class="cc-icon-btn" id="cc-collapse-btn" title="Toggle view">
-							<svg class="cc-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+						<button class="cc-btn" id="cc-gear-btn" title="Settings & Colors">
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+						</button>
+						<button class="cc-btn" id="cc-pill-btn" title="Minimize to pill">
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
 						</button>
 					</div>
 				</div>
 
-				<div class="cc-unavailable-banner" id="cc-unavailable">
-					<span id="cc-unavailable-msg">Usage unavailable</span>
-					<button class="cc-retry-btn" id="cc-retry-btn">Retry</button>
-				</div>
+				<!-- Body Content -->
+				<div class="cc-body" id="cc-body">
+					<!-- State: Empty Plan Notice (calm neutral, NOT red) -->
+					<div class="cc-empty-notice" id="cc-empty-notice">
+						<span class="cc-info-icon" title="Free accounts or plans without rolling usage windows return null limits. Context tokens and prompt cache are still tracked.">i</span>
+						<span>No usage window active, or not provided for this plan</span>
+					</div>
 
-				<div class="cc-rows" id="cc-rows">
+					<!-- State: Error Notice -->
+					<div class="cc-error-notice" id="cc-error-notice">
+						<span id="cc-error-msg">Usage currently unavailable</span>
+						<button class="cc-retry-btn" id="cc-retry-btn">Retry</button>
+					</div>
+
 					<!-- Context Row -->
 					<div class="cc-row" id="cc-row-context">
 						<div class="cc-row-meta">
@@ -485,7 +730,7 @@
 							<span class="cc-row-label">Session 5h</span>
 							<div class="cc-row-stat">
 								<span class="cc-val-reset" id="cc-sess-reset"></span>
-								<span class="cc-val-pct" id="cc-sess-pct">0%</span>
+								<span class="cc-val-pct" id="cc-sess-pct">n/a</span>
 							</div>
 						</div>
 						<div class="cc-bar-track" role="progressbar" aria-label="5-hour session utilization" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
@@ -500,7 +745,7 @@
 							<span class="cc-row-label">Weekly 7d</span>
 							<div class="cc-row-stat">
 								<span class="cc-val-reset" id="cc-week-reset"></span>
-								<span class="cc-val-pct" id="cc-week-pct">0%</span>
+								<span class="cc-val-pct" id="cc-week-pct">n/a</span>
 							</div>
 						</div>
 						<div class="cc-bar-track" role="progressbar" aria-label="7-day weekly utilization" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
@@ -509,132 +754,427 @@
 						</div>
 					</div>
 				</div>
+
+				<!-- Settings Drawer -->
+				<div class="cc-settings-drawer" id="cc-settings-drawer">
+					<div class="cc-settings-title">Color Themes</div>
+					<div class="cc-presets-grid">
+						<button class="cc-preset-btn" data-preset="default">Default</button>
+						<button class="cc-preset-btn" data-preset="ocean">Ocean</button>
+						<button class="cc-preset-btn" data-preset="sunset">Sunset</button>
+						<button class="cc-preset-btn" data-preset="mono">Mono</button>
+						<button class="cc-preset-btn" data-preset="highContrast">High-contrast</button>
+					</div>
+
+					<div class="cc-settings-title" style="margin-top: 4px;">Custom Colors</div>
+					<div class="cc-settings-row">
+						<span>Low (0–60%)</span>
+						<input type="color" id="cc-col-low" />
+					</div>
+					<div class="cc-settings-row">
+						<span>Mid (60–85%)</span>
+						<input type="color" id="cc-col-mid" />
+					</div>
+					<div class="cc-settings-row">
+						<span>High (85–100%)</span>
+						<input type="color" id="cc-col-high" />
+					</div>
+					<div class="cc-settings-row">
+						<span>Background Opacity</span>
+						<input type="range" id="cc-opacity-slider" min="50" max="100" step="2" />
+					</div>
+
+					<div class="cc-contrast-alert" id="cc-contrast-alert">
+						⚠️ Low contrast (< 4.5:1). Colors may be hard to read.
+					</div>
+
+					<div class="cc-settings-title" style="margin-top: 4px;">Rows Visibility</div>
+					<div class="cc-settings-row">
+						<label><input type="checkbox" id="cc-chk-ctx" /> Context</label>
+						<label><input type="checkbox" id="cc-chk-sess" /> Session 5h</label>
+						<label><input type="checkbox" id="cc-chk-week" /> Weekly 7d</label>
+					</div>
+
+					<div class="cc-settings-actions">
+						<button class="cc-btn-secondary" id="cc-reset-pos-btn">Reset Position</button>
+						<button class="cc-btn-secondary" id="cc-reset-defaults-btn">Reset Defaults</button>
+					</div>
+				</div>
 			`;
 
-			this.shadowRoot.appendChild(card);
+			this.shadowRoot.appendChild(panel);
 
-			// Cache references to dynamic elements
-			this.domElements.cachePill = this.shadowRoot.getElementById('cc-cache-pill');
-			this.domElements.cacheRingFill = this.shadowRoot.getElementById('cc-cache-fill');
-			this.domElements.cacheText = this.shadowRoot.getElementById('cc-cache-text');
-			this.domElements.summary = this.shadowRoot.getElementById('cc-summary');
-			this.domElements.collapseBtn = this.shadowRoot.getElementById('cc-collapse-btn');
-			this.domElements.debugBtn = this.shadowRoot.getElementById('cc-debug-btn');
-			this.domElements.unavailable = this.shadowRoot.getElementById('cc-unavailable');
-			this.domElements.unavailableMsg = this.shadowRoot.getElementById('cc-unavailable-msg');
-			this.domElements.retryBtn = this.shadowRoot.getElementById('cc-retry-btn');
+			// Cache references
+			this.dom.panel = panel;
+			this.dom.handle = this.shadowRoot.getElementById('cc-drag-handle');
+			this.dom.pillContent = this.shadowRoot.getElementById('cc-pill-content');
+			this.dom.pillSummary = this.shadowRoot.getElementById('cc-pill-summary');
+			this.dom.pillBtn = this.shadowRoot.getElementById('cc-pill-btn');
+			this.dom.gearBtn = this.shadowRoot.getElementById('cc-gear-btn');
+			this.dom.debugBtn = this.shadowRoot.getElementById('cc-debug-btn');
 
-			this.domElements.ctxMain = this.shadowRoot.getElementById('cc-ctx-main');
-			this.domElements.ctxPct = this.shadowRoot.getElementById('cc-ctx-pct');
-			this.domElements.ctxBar = this.shadowRoot.getElementById('cc-ctx-bar');
+			this.dom.cachePill = this.shadowRoot.getElementById('cc-cache-pill');
+			this.dom.cacheFill = this.shadowRoot.getElementById('cc-cache-fill');
+			this.dom.cacheText = this.shadowRoot.getElementById('cc-cache-text');
 
-			this.domElements.sessReset = this.shadowRoot.getElementById('cc-sess-reset');
-			this.domElements.sessPct = this.shadowRoot.getElementById('cc-sess-pct');
-			this.domElements.sessBar = this.shadowRoot.getElementById('cc-sess-bar');
-			this.domElements.sessMarker = this.shadowRoot.getElementById('cc-sess-marker');
+			this.dom.emptyNotice = this.shadowRoot.getElementById('cc-empty-notice');
+			this.dom.errorNotice = this.shadowRoot.getElementById('cc-error-notice');
+			this.dom.errorMsg = this.shadowRoot.getElementById('cc-error-msg');
+			this.dom.retryBtn = this.shadowRoot.getElementById('cc-retry-btn');
 
-			this.domElements.weekReset = this.shadowRoot.getElementById('cc-week-reset');
-			this.domElements.weekPct = this.shadowRoot.getElementById('cc-week-pct');
-			this.domElements.weekBar = this.shadowRoot.getElementById('cc-week-bar');
-			this.domElements.weekMarker = this.shadowRoot.getElementById('cc-week-marker');
+			this.dom.rowCtx = this.shadowRoot.getElementById('cc-row-context');
+			this.dom.ctxMain = this.shadowRoot.getElementById('cc-ctx-main');
+			this.dom.ctxPct = this.shadowRoot.getElementById('cc-ctx-pct');
+			this.dom.ctxBar = this.shadowRoot.getElementById('cc-ctx-bar');
 
-			// Collapse toggle listener
-			this.domElements.collapseBtn.addEventListener('click', (e) => {
+			this.dom.rowSess = this.shadowRoot.getElementById('cc-row-session');
+			this.dom.sessReset = this.shadowRoot.getElementById('cc-sess-reset');
+			this.dom.sessPct = this.shadowRoot.getElementById('cc-sess-pct');
+			this.dom.sessBar = this.shadowRoot.getElementById('cc-sess-bar');
+			this.dom.sessMarker = this.shadowRoot.getElementById('cc-sess-marker');
+
+			this.dom.rowWeek = this.shadowRoot.getElementById('cc-row-weekly');
+			this.dom.weekReset = this.shadowRoot.getElementById('cc-week-reset');
+			this.dom.weekPct = this.shadowRoot.getElementById('cc-week-pct');
+			this.dom.weekBar = this.shadowRoot.getElementById('cc-week-bar');
+			this.dom.weekMarker = this.shadowRoot.getElementById('cc-week-marker');
+
+			// Settings elements
+			this.dom.settingsDrawer = this.shadowRoot.getElementById('cc-settings-drawer');
+			this.dom.colLow = this.shadowRoot.getElementById('cc-col-low');
+			this.dom.colMid = this.shadowRoot.getElementById('cc-col-mid');
+			this.dom.colHigh = this.shadowRoot.getElementById('cc-col-high');
+			this.dom.opacitySlider = this.shadowRoot.getElementById('cc-opacity-slider');
+			this.dom.contrastAlert = this.shadowRoot.getElementById('cc-contrast-alert');
+			this.dom.chkCtx = this.shadowRoot.getElementById('cc-chk-ctx');
+			this.dom.chkSess = this.shadowRoot.getElementById('cc-chk-sess');
+			this.dom.chkWeek = this.shadowRoot.getElementById('cc-chk-week');
+			this.dom.resetPosBtn = this.shadowRoot.getElementById('cc-reset-pos-btn');
+			this.dom.resetDefaultsBtn = this.shadowRoot.getElementById('cc-reset-defaults-btn');
+
+			this._bindEvents();
+			this.applyThemeAndSettings();
+			this.applyPosition();
+		}
+
+		_bindEvents() {
+			// Minimize / Expand Pill toggle
+			const togglePill = () => {
+				this.isPill = !this.isPill;
+				localStorage.setItem('cc_pill', String(this.isPill));
+				this.panel.classList.toggle('cc-panel--pill', this.isPill);
+				if (this.isPill) {
+					this.settingsOpen = false;
+					this.dom.settingsDrawer.classList.remove('cc-open');
+				}
+				this.clampPosition();
+			};
+
+			this.dom.pillBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.isCollapsed = !this.isCollapsed;
-				localStorage.setItem('cc_collapsed', String(this.isCollapsed));
-				card.classList.toggle('cc-mode-collapsed', this.isCollapsed);
-				card.classList.toggle('cc-mode-expanded', !this.isCollapsed);
+				togglePill();
 			});
 
-			// Retry listener
-			this.domElements.retryBtn.addEventListener('click', (e) => {
+			this.dom.pillContent.addEventListener('click', (e) => {
 				e.stopPropagation();
-				if (this.onUsageRefresh) this.onUsageRefresh();
+				togglePill();
 			});
 
-			// Debug copy button
+			// Settings Drawer toggle
+			this.dom.gearBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.settingsOpen = !this.settingsOpen;
+				this.dom.settingsDrawer.classList.toggle('cc-open', this.settingsOpen);
+				this.clampPosition();
+			});
+
+			// Debug export button
 			if (localStorage.getItem(CC.CONST.DEBUG_STORAGE_KEY) === 'true' || window.__CC_DEBUG) {
-				this.domElements.debugBtn.style.display = 'inline-flex';
+				this.dom.debugBtn.style.display = 'inline-flex';
 			}
-			this.domElements.debugBtn.addEventListener('click', (e) => {
+			this.dom.debugBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
 				if (this.onCopyDebug) this.onCopyDebug();
 			});
 
-			this.updateTheme();
-			this._observeTheme();
-		}
+			// Retry button
+			this.dom.retryBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				if (this.onUsageRefresh) this.onUsageRefresh();
+			});
 
-		updateTheme() {
-			const root = document.documentElement;
-			const isDarkAttr = root.dataset?.mode === 'dark' || root.classList.contains('dark') || document.body?.classList.contains('dark');
-			const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-			const isDark = isDarkAttr || (!root.dataset?.mode && !root.classList.contains('light') && prefersDark);
+			// Presets buttons
+			this.shadowRoot.querySelectorAll('.cc-preset-btn').forEach((btn) => {
+				btn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					const presetKey = btn.dataset.preset;
+					const p = PRESETS[presetKey];
+					if (p) {
+						this.settings.preset = presetKey;
+						this.settings.lowColor = p.low;
+						this.settings.midColor = p.mid;
+						this.settings.highColor = p.high;
+						this.settings.accentColor = p.accent;
+						this._saveSettings();
+					}
+				});
+			});
 
-			if (this.domElements.card) {
-				this.domElements.card.classList.toggle('cc-theme-dark', isDark);
-				this.domElements.card.classList.toggle('cc-theme-light', !isDark);
-			}
-		}
+			// Color & Opacity inputs
+			this.dom.colLow.addEventListener('input', (e) => {
+				this.settings.lowColor = e.target.value;
+				this._saveSettings();
+			});
+			this.dom.colMid.addEventListener('input', (e) => {
+				this.settings.midColor = e.target.value;
+				this._saveSettings();
+			});
+			this.dom.colHigh.addEventListener('input', (e) => {
+				this.settings.highColor = e.target.value;
+				this._saveSettings();
+			});
+			this.dom.opacitySlider.addEventListener('input', (e) => {
+				this.settings.opacity = parseInt(e.target.value, 10) / 100;
+				this._saveSettings();
+			});
 
-		_observeTheme() {
-			const observer = new MutationObserver(() => this.updateTheme());
-			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode', 'class'] });
+			// Row Visibility checkboxes
+			this.dom.chkCtx.addEventListener('change', (e) => {
+				this.settings.showContext = e.target.checked;
+				this._saveSettings();
+			});
+			this.dom.chkSess.addEventListener('change', (e) => {
+				this.settings.showSession = e.target.checked;
+				this._saveSettings();
+			});
+			this.dom.chkWeek.addEventListener('change', (e) => {
+				this.settings.showWeekly = e.target.checked;
+				this._saveSettings();
+			});
+
+			// Reset buttons
+			this.dom.resetPosBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.resetPosition();
+			});
+			this.dom.resetDefaultsBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.resetDefaults();
+			});
+
+			// Draggable mechanics
+			this._initDraggable();
+
+			// Window resize listener to keep clamped
+			window.addEventListener('resize', () => this.clampPosition());
+
+			// Theme change observer
+			const themeObserver = new MutationObserver(() => this.applyThemeAndSettings());
+			themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode', 'class'] });
 			if (document.body) {
-				observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-			}
-			if (window.matchMedia) {
-				window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.updateTheme());
+				themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 			}
 		}
 
-		setFloating(floating) {
-			this.isFloating = floating;
-			if (this.domElements.card) {
-				this.domElements.card.classList.toggle('cc-meter-card--floating', floating);
+		_initDraggable() {
+			const handle = this.dom.handle;
+			let startX = 0;
+			let startY = 0;
+			let initialLeft = 0;
+			let initialTop = 0;
+			let hasMoved = false;
+
+			const onPointerDown = (e) => {
+				if (e.target.closest('button') || e.target.closest('input')) return;
+				handle.setPointerCapture(e.pointerId);
+				startX = e.clientX;
+				startY = e.clientY;
+
+				const rect = this.panel.getBoundingClientRect();
+				initialLeft = rect.left;
+				initialTop = rect.top;
+				hasMoved = false;
+
+				handle.addEventListener('pointermove', onPointerMove);
+				handle.addEventListener('pointerup', onPointerUp);
+				handle.addEventListener('pointercancel', onPointerUp);
+			};
+
+			const onPointerMove = (e) => {
+				const dx = e.clientX - startX;
+				const dy = e.clientY - startY;
+				if (!hasMoved && Math.hypot(dx, dy) < 4) return;
+				hasMoved = true;
+
+				const newX = initialLeft + dx;
+				const newY = initialTop + dy;
+				this.setPosition(newX, newY);
+			};
+
+			const onPointerUp = (e) => {
+				handle.removeEventListener('pointermove', onPointerMove);
+				handle.removeEventListener('pointerup', onPointerUp);
+				handle.removeEventListener('pointercancel', onPointerUp);
+				try {
+					handle.releasePointerCapture(e.pointerId);
+				} catch {
+					// ignore
+				}
+				if (hasMoved) {
+					const rect = this.panel.getBoundingClientRect();
+					this._savePos({ x: rect.left, y: rect.top });
+				}
+			};
+
+			handle.addEventListener('pointerdown', onPointerDown);
+		}
+
+		setPosition(x, y) {
+			const rect = this.panel.getBoundingClientRect();
+			const width = rect.width || 290;
+			const height = rect.height || 180;
+			const maxX = window.innerWidth - width - 10;
+			const maxY = window.innerHeight - height - 10;
+			const clampedX = Math.max(10, Math.min(maxX, x));
+			const clampedY = Math.max(10, Math.min(maxY, y));
+
+			this.panel.style.left = `${clampedX}px`;
+			this.panel.style.top = `${clampedY}px`;
+			this.panel.style.right = 'auto';
+			this.panel.style.bottom = 'auto';
+		}
+
+		clampPosition() {
+			const rect = this.panel.getBoundingClientRect();
+			this.setPosition(rect.left, rect.top);
+		}
+
+		applyPosition() {
+			if (this.pos && typeof this.pos.x === 'number' && typeof this.pos.y === 'number') {
+				this.setPosition(this.pos.x, this.pos.y);
+			} else {
+				// Default placement: bottom right
+				this.panel.style.left = 'auto';
+				this.panel.style.top = 'auto';
+				this.panel.style.right = '24px';
+				this.panel.style.bottom = '24px';
 			}
 		}
 
-		attachTo(anchorElement, asFloating = false) {
+		resetPosition() {
+			this._savePos(null);
+			this.applyPosition();
+		}
+
+		resetDefaults() {
+			this.settings = {
+				preset: 'default',
+				lowColor: PRESETS.default.low,
+				midColor: PRESETS.default.mid,
+				highColor: PRESETS.default.high,
+				accentColor: PRESETS.default.accent,
+				opacity: 0.94,
+				showContext: true,
+				showSession: true,
+				showWeekly: true
+			};
+			this._saveSettings();
+			this.resetPosition();
+		}
+
+		applyThemeAndSettings() {
+			const root = document.documentElement;
+			const isDark = root.dataset?.mode === 'dark' ||
+				root.classList.contains('dark') ||
+				document.body?.classList.contains('dark') ||
+				(!root.dataset?.mode && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+			this.panel.classList.toggle('cc-theme-dark', isDark);
+			this.panel.classList.toggle('cc-theme-light', !isDark);
+
+			// Apply color vars
+			const low = this.settings.lowColor || PRESETS.default.low;
+			const mid = this.settings.midColor || PRESETS.default.mid;
+			const high = this.settings.highColor || PRESETS.default.high;
+			const accent = this.settings.accentColor || PRESETS.default.accent;
+			const opacity = this.settings.opacity ?? 0.94;
+
+			this.panel.style.setProperty('--cc-color-low', low);
+			this.panel.style.setProperty('--cc-color-mid', mid);
+			this.panel.style.setProperty('--cc-color-high', high);
+			this.panel.style.setProperty('--cc-accent', accent);
+
+			const baseBg = isDark ? `rgba(28, 27, 26, ${opacity})` : `rgba(255, 255, 255, ${opacity})`;
+			this.panel.style.setProperty('--cc-bg', baseBg);
+
+			// Inputs in settings drawer
+			if (this.dom.colLow) this.dom.colLow.value = low;
+			if (this.dom.colMid) this.dom.colMid.value = mid;
+			if (this.dom.colHigh) this.dom.colHigh.value = high;
+			if (this.dom.opacitySlider) this.dom.opacitySlider.value = Math.round(opacity * 100);
+
+			if (this.dom.chkCtx) this.dom.chkCtx.checked = !!this.settings.showContext;
+			if (this.dom.chkSess) this.dom.chkSess.checked = !!this.settings.showSession;
+			if (this.dom.chkWeek) this.dom.chkWeek.checked = !!this.settings.showWeekly;
+
+			// Row visibility
+			if (this.dom.rowCtx) this.dom.rowCtx.classList.toggle('cc-hidden', !this.settings.showContext || !this.metrics.hasConversation);
+			if (this.dom.rowSess) this.dom.rowSess.classList.toggle('cc-hidden', !this.settings.showSession);
+			if (this.dom.rowWeek) this.dom.rowWeek.classList.toggle('cc-hidden', !this.settings.showWeekly);
+
+			// Contrast check
+			const bgRgb = isDark ? { r: 28, g: 27, b: 26 } : { r: 255, g: 255, b: 255 };
+			const textRgb = isDark ? { r: 240, g: 238, b: 233 } : { r: 31, g: 30, b: 29 };
+			const cr = getContrastRatio(bgRgb, textRgb);
+			if (this.dom.contrastAlert) {
+				this.dom.contrastAlert.classList.toggle('cc-show', cr < 4.5);
+			}
+
+			this.refreshBarColors();
+		}
+
+		refreshBarColors() {
+			const getColor = (pct) => {
+				if (typeof pct !== 'number') return this.settings.lowColor;
+				if (pct <= 60) return interpolateColor(this.settings.lowColor, this.settings.midColor, pct / 60);
+				return interpolateColor(this.settings.midColor, this.settings.highColor, (pct - 60) / 40);
+			};
+
+			if (this.dom.ctxBar && typeof this.metrics.context.pct === 'number') {
+				this.dom.ctxBar.style.backgroundColor = getColor(this.metrics.context.pct);
+			}
+			if (this.dom.sessBar && typeof this.metrics.session.pct === 'number') {
+				this.dom.sessBar.style.backgroundColor = getColor(this.metrics.session.pct);
+			}
+			if (this.dom.weekBar && typeof this.metrics.weekly.pct === 'number') {
+				this.dom.weekBar.style.backgroundColor = getColor(this.metrics.weekly.pct);
+			}
+		}
+
+		attach() {
 			this.initialize();
-			this.setFloating(asFloating);
-
-			if (asFloating) {
-				if (!document.body.contains(this.rootElement)) {
-					document.body.appendChild(this.rootElement);
-				}
-				this.currentAnchor = null;
-				return;
+			const parent = document.body || document.documentElement;
+			if (!parent.contains(this.rootElement)) {
+				parent.appendChild(this.rootElement);
 			}
-
-			if (!anchorElement) return;
-
-			// Idempotent insertion
-			if (this.rootElement.parentElement !== anchorElement.parentElement || this.rootElement.previousElementSibling !== anchorElement) {
-				anchorElement.after(this.rootElement);
-			}
-			this.currentAnchor = anchorElement;
 		}
 
-		setUnavailable(reason) {
-			this.metrics.unavailableReason = reason;
-			if (this.domElements.card) {
-				this.domElements.card.classList.toggle('cc-state-unavailable', !!reason);
-				if (this.domElements.unavailableMsg && reason) {
-					this.domElements.unavailableMsg.textContent = reason;
-				}
+		setConversationActive(hasConv) {
+			this.metrics.hasConversation = !!hasConv;
+			if (this.dom.rowCtx) {
+				this.dom.rowCtx.classList.toggle('cc-hidden', !this.settings.showContext || !this.metrics.hasConversation);
 			}
+			this.updateSummary();
 		}
 
 		setPendingCache(pending) {
 			this.metrics.isPendingCache = pending;
-			if (this.domElements.cachePill) {
+			if (this.dom.cachePill) {
 				if (pending) {
-					this.domElements.cachePill.classList.remove('cc-hidden');
-					this.domElements.cacheText.textContent = 'caching...';
+					this.dom.cachePill.classList.remove('cc-hidden');
+					this.dom.cacheText.textContent = 'caching...';
 				} else if (!this.metrics.cachedUntil || this.metrics.cachedUntil <= Date.now()) {
-					this.domElements.cachePill.classList.add('cc-hidden');
+					this.dom.cachePill.classList.add('cc-hidden');
 				}
 			}
 		}
@@ -650,73 +1190,115 @@
 			};
 			this.metrics.cachedUntil = cachedUntil;
 
-			if (this.domElements.ctxMain) {
-				this.domElements.ctxMain.textContent = this.metrics.context.formatted;
-				this.domElements.ctxPct.textContent = `${pct.toFixed(1)}%`;
-				this.domElements.ctxBar.style.width = `${pct}%`;
-				this.domElements.ctxBar.style.backgroundColor = getColorForPct(pct);
-				this.domElements.ctxBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
+			if (this.dom.ctxMain) {
+				this.dom.ctxMain.textContent = this.metrics.context.formatted;
+				this.dom.ctxPct.textContent = `${pct.toFixed(1)}%`;
+				this.dom.ctxBar.style.width = `${pct}%`;
+				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
 
-				const row = this.shadowRoot.getElementById('cc-row-context');
+				const row = this.dom.rowCtx;
 				if (row) row.classList.toggle('cc-high-utilization', pct >= 90);
 			}
 
+			this.refreshBarColors();
 			this.updateSummary();
 			this.tick();
 		}
 
-		setUsage(usage) {
-			this.setUnavailable(null);
+		/**
+		 * Apply normalized model output:
+		 * { session: { pct, resetsAt }, weekly: { pct, resetsAt }, extras, state, errorReason }
+		 */
+		setNormalizedUsage(norm) {
+			this.metrics.state = norm.state;
+			this.metrics.errorReason = norm.errorReason;
 
-			const session = usage?.five_hour || null;
-			const weekly = usage?.seven_day || null;
+			// Handle overall panel states (empty / error / ok)
+			this.panel.classList.toggle('cc-state-empty', norm.state === 'empty');
+			this.panel.classList.toggle('cc-state-error', norm.state === 'error');
 
-			// Session
-			if (session && typeof session.utilization === 'number') {
-				const pct = Math.max(0, Math.min(100, session.utilization));
-				const resetsAt = session.resets_at ? Date.parse(session.resets_at) : null;
+			if (norm.state === 'error') {
+				if (this.dom.errorMsg) this.dom.errorMsg.textContent = norm.errorReason || 'Usage currently unavailable';
+			}
+
+			// Session window
+			const sess = norm.session;
+			if (sess && typeof sess.pct === 'number') {
+				const pct = sess.pct;
+				const resetsAt = sess.resetsAt ? Date.parse(sess.resetsAt) : null;
 				const windowStart = resetsAt ? resetsAt - 5 * 60 * 60 * 1000 : null;
+				this.metrics.session = { pct, resetsAt, windowStart };
 
-				this.metrics.session = { pct, resetsAt, windowStart, raw: session };
-				if (this.domElements.sessPct) {
-					this.domElements.sessPct.textContent = `${pct.toFixed(1)}%`;
-					this.domElements.sessBar.style.width = `${pct}%`;
-					this.domElements.sessBar.style.backgroundColor = getColorForPct(pct);
-					this.domElements.sessBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
-
-					const row = this.shadowRoot.getElementById('cc-row-session');
-					if (row) row.classList.toggle('cc-high-utilization', pct >= 90);
+				if (this.dom.sessPct) {
+					this.dom.sessPct.textContent = `${pct.toFixed(1)}%`;
+					this.dom.sessBar.style.width = `${pct}%`;
+					this.dom.sessBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
+					if (this.dom.rowSess) this.dom.rowSess.classList.toggle('cc-high-utilization', pct >= 90);
 				}
+			} else {
+				// No session window data
+				this.metrics.session = { pct: null, resetsAt: null, windowStart: null };
+				if (this.dom.sessPct) {
+					this.dom.sessPct.textContent = 'n/a';
+					this.dom.sessBar.style.width = '0%';
+					this.dom.sessBar.parentElement.setAttribute('aria-valuenow', '0');
+					if (this.dom.rowSess) this.dom.rowSess.classList.remove('cc-high-utilization');
+				}
+				if (this.dom.sessReset) this.dom.sessReset.textContent = '';
+				if (this.dom.sessMarker) this.dom.sessMarker.classList.add('cc-hidden');
 			}
 
-			// Weekly
-			if (weekly && typeof weekly.utilization === 'number') {
-				const pct = Math.max(0, Math.min(100, weekly.utilization));
-				const resetsAt = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
+			// Weekly window
+			const week = norm.weekly;
+			if (week && typeof week.pct === 'number') {
+				const pct = week.pct;
+				const resetsAt = week.resetsAt ? Date.parse(week.resetsAt) : null;
 				const windowStart = resetsAt ? resetsAt - 7 * 24 * 60 * 60 * 1000 : null;
+				this.metrics.weekly = { pct, resetsAt, windowStart };
 
-				this.metrics.weekly = { pct, resetsAt, windowStart, raw: weekly };
-				if (this.domElements.weekPct) {
-					this.domElements.weekPct.textContent = `${pct.toFixed(1)}%`;
-					this.domElements.weekBar.style.width = `${pct}%`;
-					this.domElements.weekBar.style.backgroundColor = getColorForPct(pct);
-					this.domElements.weekBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
-
-					const row = this.shadowRoot.getElementById('cc-row-weekly');
-					if (row) row.classList.toggle('cc-high-utilization', pct >= 90);
+				if (this.dom.weekPct) {
+					this.dom.weekPct.textContent = `${pct.toFixed(1)}%`;
+					this.dom.weekBar.style.width = `${pct}%`;
+					this.dom.weekBar.parentElement.setAttribute('aria-valuenow', pct.toFixed(1));
+					if (this.dom.rowWeek) this.dom.rowWeek.classList.toggle('cc-high-utilization', pct >= 90);
 				}
+			} else {
+				// No weekly window data
+				this.metrics.weekly = { pct: null, resetsAt: null, windowStart: null };
+				if (this.dom.weekPct) {
+					this.dom.weekPct.textContent = 'n/a';
+					this.dom.weekBar.style.width = '0%';
+					this.dom.weekBar.parentElement.setAttribute('aria-valuenow', '0');
+					if (this.dom.rowWeek) this.dom.rowWeek.classList.remove('cc-high-utilization');
+				}
+				if (this.dom.weekReset) this.dom.weekReset.textContent = '';
+				if (this.dom.weekMarker) this.dom.weekMarker.classList.add('cc-hidden');
 			}
 
+			this.refreshBarColors();
 			this.updateSummary();
 			this.tick();
 		}
 
 		updateSummary() {
-			if (!this.domElements.summary) return;
-			const ctxStr = `~${Math.round(this.metrics.context.tokens / 1000)}k ctx`;
-			const sessStr = `${this.metrics.session.pct.toFixed(0)}% 5h`;
-			const weekStr = `${this.metrics.weekly.pct.toFixed(0)}% 7d`;
-			this.domElements.summary.textContent = `${ctxStr} · ${sessStr} · ${weekStr}`;
+			if (!this.dom.pillSummary) return;
+			const parts = [];
+
+			if (this.metrics.session.pct !== null) {
+				parts.push(`${this.metrics.session.pct.toFixed(0)}% 5h`);
+			}
+			if (this.metrics.weekly.pct !== null) {
+				parts.push(`${this.metrics.weekly.pct.toFixed(0)}% 7d`);
+			}
+			if (this.metrics.hasConversation && this.metrics.context.tokens > 0) {
+				parts.push(`~${Math.round(this.metrics.context.tokens / 1000)}k`);
+			}
+
+			if (parts.length === 0) {
+				this.dom.pillSummary.textContent = this.metrics.state === 'empty' ? 'Plan: Free' : 'Usage Meter';
+			} else {
+				this.dom.pillSummary.textContent = parts.join(' · ');
+			}
 		}
 
 		tick() {
@@ -725,54 +1307,50 @@
 			// 1. Cache countdown & ring
 			if (this.metrics.cachedUntil && this.metrics.cachedUntil > now) {
 				const secondsLeft = Math.max(0, Math.ceil((this.metrics.cachedUntil - now) / 1000));
-				if (this.domElements.cachePill) {
-					this.domElements.cachePill.classList.remove('cc-hidden');
-					this.domElements.cacheText.textContent = `cached ${formatSeconds(secondsLeft)}`;
+				if (this.dom.cachePill) {
+					this.dom.cachePill.classList.remove('cc-hidden');
+					this.dom.cacheText.textContent = `cached ${formatSeconds(secondsLeft)}`;
 
 					const totalWindow = CC.CONST.CACHE_WINDOW_MS / 1000;
-					const fractionRemaining = Math.max(0, Math.min(1, secondsLeft / totalWindow));
-					const circumference = 2 * Math.PI * 6; // r=6 -> ~37.7
-					const offset = circumference * (1 - fractionRemaining);
-					if (this.domElements.cacheRingFill) {
-						this.domElements.cacheRingFill.style.strokeDashoffset = `${offset}`;
+					const fraction = Math.max(0, Math.min(1, secondsLeft / totalWindow));
+					const circumference = 2 * Math.PI * 6;
+					const offset = circumference * (1 - fraction);
+					if (this.dom.cacheFill) {
+						this.dom.cacheFill.style.strokeDashoffset = `${offset}`;
 					}
 				}
 			} else if (this.metrics.cachedUntil && this.metrics.cachedUntil <= now) {
 				this.metrics.cachedUntil = null;
-				if (!this.metrics.isPendingCache && this.domElements.cachePill) {
-					this.domElements.cachePill.classList.add('cc-hidden');
+				if (!this.metrics.isPendingCache && this.dom.cachePill) {
+					this.dom.cachePill.classList.add('cc-hidden');
 				}
 			}
 
-			// 2. Session countdown & marker
-			if (this.metrics.session.resetsAt) {
-				if (this.domElements.sessReset) {
-					this.domElements.sessReset.textContent = `resets in ${formatResetCountdown(this.metrics.session.resetsAt)}`;
-				}
-				if (this.domElements.sessMarker && this.metrics.session.windowStart) {
+			// 2. Session countdown & temporal marker
+			if (this.metrics.session.resetsAt && this.dom.sessReset) {
+				this.dom.sessReset.textContent = `resets in ${formatResetCountdown(this.metrics.session.resetsAt)}`;
+				if (this.dom.sessMarker && this.metrics.session.windowStart) {
 					const total = this.metrics.session.resetsAt - this.metrics.session.windowStart;
 					const elapsed = Math.max(0, Math.min(total, now - this.metrics.session.windowStart));
 					const ratio = total > 0 ? elapsed / total : 0;
-					this.domElements.sessMarker.classList.remove('cc-hidden');
-					this.domElements.sessMarker.style.left = `${(ratio * 100).toFixed(1)}%`;
+					this.dom.sessMarker.classList.remove('cc-hidden');
+					this.dom.sessMarker.style.left = `${(ratio * 100).toFixed(1)}%`;
 				}
 			}
 
-			// 3. Weekly countdown & marker
-			if (this.metrics.weekly.resetsAt) {
-				if (this.domElements.weekReset) {
-					this.domElements.weekReset.textContent = `resets in ${formatResetCountdown(this.metrics.weekly.resetsAt)}`;
-				}
-				if (this.domElements.weekMarker && this.metrics.weekly.windowStart) {
+			// 3. Weekly countdown & temporal marker
+			if (this.metrics.weekly.resetsAt && this.dom.weekReset) {
+				this.dom.weekReset.textContent = `resets in ${formatResetCountdown(this.metrics.weekly.resetsAt)}`;
+				if (this.dom.weekMarker && this.metrics.weekly.windowStart) {
 					const total = this.metrics.weekly.resetsAt - this.metrics.weekly.windowStart;
 					const elapsed = Math.max(0, Math.min(total, now - this.metrics.weekly.windowStart));
 					const ratio = total > 0 ? elapsed / total : 0;
-					this.domElements.weekMarker.classList.remove('cc-hidden');
-					this.domElements.weekMarker.style.left = `${(ratio * 100).toFixed(1)}%`;
+					this.dom.weekMarker.classList.remove('cc-hidden');
+					this.dom.weekMarker.style.left = `${(ratio * 100).toFixed(1)}%`;
 				}
 			}
 		}
 	}
 
-	CC.ui = { CounterUI };
+	CC.ui = { CounterUI, PRESETS };
 })();

@@ -36,12 +36,13 @@ This project is a modified version of [claude-counter](https://github.com/she-ll
 
 ## How it works
 
-- **Early Interception:** In Manifest V3, an early script injected in the `MAIN` world at `document_start` wraps `window.fetch`, `XMLHttpRequest`, and `history.pushState` before Claude's SPA framework executes.
-- **Token counting:** Uses a vendored `o200k_base` tokenizer for approximate token counting, yielding asynchronously across long message trunks to avoid main-thread stuttering.
-- **Native `/usage` + Live SSE:** Queries Claude's `/api/organizations/{orgId}/usage` endpoint using your active session credentials and reads live SSE `message_limit` stream chunks for exact, unrounded utilization fractions.
-- **DOM observer:** Uses a debounced `MutationObserver` alongside SPA navigation watchers (`pushState`, `popstate`, periodic path watcher) to re-attach the widget idempotently as you navigate between conversations.
+- **Fixed Draggable Panel:** Mounts independently of Claude's internal DOM structure in an isolated ShadowRoot. Clamped to the viewport, remembers custom dragged coordinates, and includes a compact pill minimize mode.
+- **Self-Healing Mount:** A lightweight observer and heartbeat ensure the panel remains mounted and re-attaches within ~1s across single-page transitions.
+- **Request Discipline:** Calls to `/usage` are deduplicated so only one request is in-flight at a time, throttled to a minimum 30-second interval (with one immediate refresh after an assistant message completes), with exponential backoff on errors.
+- **Plan-Aware Usage Model:** Queries Claude's `/api/organizations/{orgId}/usage` endpoint using your active session. Free-plan accounts typically return all-null limits; the extension recognizes this as a valid empty state rather than an error. When live SSE `message_limit` chunks are received, they fill utilization bars in real time.
+- **Token counting:** Uses a vendored `o200k_base` tokenizer for approximate token counting, yielding asynchronously across long message trunks to avoid main-thread stuttering. Context tokens display only when an active conversation exists.
 
-> **Note:** Because this extension relies on claude.ai's undocumented internals and private API endpoints, Anthropic UI updates may require occasional maintenance updates.
+> **Note:** Because this extension relies on claude.ai's undocumented internals and private API endpoints, free plans may show no usage windows, and Anthropic UI updates may require occasional maintenance updates.
 
 ## Privacy
 
