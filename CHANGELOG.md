@@ -2,6 +2,28 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.7] - 2026-10-17
+
+### Chat Switch Race Fixes, Per-Chat In-Flight Dedupe & Context Input Debounce
+- **Post-Tokenization Race Condition (Bug 1):**
+  - Resolved chat switch race in `src/content/main.js` (`cc:conversation` handler) where payload tokenization completing after switching chats painted old token metrics onto the newly selected chat.
+  - Added monotonic payload sequence counter (`conversationPayloadSeq`) and a post-await validation re-checking `conversationId === currentConversationId && payloadSeq === conversationPayloadSeq`.
+  - Stale payloads are safely discarded with debug log `conversation_metrics_dropped_stale`.
+- **Per-Conversation Fetch In-Flight Deduplication (Bug 2):**
+  - Replaced global `conversationInFlightPromise` in `src/content/main.js` with per-conversation record `{ conversationId, promise }`.
+  - Switching from chat A to B while A's fetch is in flight now issues a separate fetch for chat B rather than reusing A's promise.
+  - In `finally`, `conversationInFlight` is cleared only if the active record still matches the initiating fetch entry.
+- **Loading State Verification (Check 3):**
+  - Confirmed `setConversationLoading()` in `src/content/ui.js:1184-1223` contains no early return or guard when metrics are loaded; switching chats unconditionally shows "—" and clears previous chat values.
+- **Settings Labels & Input Keystroke Debouncing (Polish 4):**
+  - Updated custom color settings labels in `src/content/ui.js` to `"Low (0–60%)"`, `"Mid (60–90%)"`, and `"High (90%+)"`.
+  - Debounced Context Window numeric input by ~600ms, ignoring intermediate inputs < 1000 and empty strings mid-typing without resetting to 200,000.
+  - Commits immediately on Enter (`change`) or resets to 200,000 only on blur when input is empty or invalid.
+- **Automated Tests:**
+  - Added unit tests in `tests/mount.test.js` validating per-chat fetch separation during chat switch, stale metric drop via sequence counter, retry timer clearing on URL change, and context window input debouncing and blur reset.
+
+---
+
 ## [0.5.6] - 2026-10-17
 
 ### Fast Post-Stream Context Refresh, UI Sizing & Payload Key Scanner

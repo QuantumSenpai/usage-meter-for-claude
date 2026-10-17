@@ -2,11 +2,21 @@ const fs = require('fs');
 const assert = require('assert');
 const path = require('path');
 
-// Load constants, tokens, and ui
+// Load constants, normalize, tokens, and ui
 require('../src/content/constants.js');
+require('../src/content/normalize.js');
 const { formatContextUtilization } = require('../src/content/tokens.js');
 const { resolveComposerCard } = require('../src/content/main.js');
 const { CounterUI, PRESETS } = require('../src/content/ui.js');
+
+const createMockStorage = () => {
+	const store = {};
+	return {
+		getItem: (k) => store[k] || null,
+		setItem: (k, v) => { store[k] = String(v); },
+		removeItem: (k) => { delete store[k]; }
+	};
+};
 
 // Minimal Fake Element & DOM for testing mount-point resolution
 class FakeElement {
@@ -280,6 +290,9 @@ async function test(name, fn) {
 			ui._saveExpanded(true);
 		});
 		assert.strictEqual(ui.isExpanded, true);
+
+		// Restore mock storage
+		globalThis.localStorage = createMockStorage();
 	});
 
 	// Test 7: Context row percentage used · left and tier colors (<60 low, 60 to <90 mid, >=90 high)
@@ -611,6 +624,239 @@ async function test(name, fn) {
 		assert.strictEqual(retryTimerId, null, 'No retry scheduled when leaf/tokens changed');
 	});
 
+	// Test 14: Polish 4 - Context Window input does not save on partial keystrokes, debounces ~600ms, and resets on blur with invalid value
+	await test('Input: Context Window input debounces ~600ms, ignores < 1000, and resets only on blur when invalid', async () => {
+		const ui = new CounterUI();
+		const savedSettings = [];
+		ui._saveSettings = function() {
+			savedSettings.push(this.settings.contextWindow);
+		};
+
+		const inputListeners = {};
+		const mockInput = {
+			value: '200000',
+			addEventListener: (event, handler) => { inputListeners[event] = handler; }
+		};
+
+		ui.dom = {
+			summaryLine: { addEventListener: () => {} },
+			expandBtn: { addEventListener: () => {} },
+			gearBtn: { addEventListener: () => {} },
+			debugBtn: { style: {}, addEventListener: () => {} },
+			retryBtn: { addEventListener: () => {} },
+			colLow: { addEventListener: () => {} },
+			colMid: { addEventListener: () => {} },
+			colHigh: { addEventListener: () => {} },
+			opacitySlider: { addEventListener: () => {} },
+			chkSess: { addEventListener: () => {} },
+			chkWeek: { addEventListener: () => {} },
+			resetDefaultsBtn: { addEventListener: () => {} },
+			contextWindowInput: mockInput
+		};
+		ui.shadowRoot = { querySelectorAll: () => [] };
+
+		// Bind real listeners from CounterUI
+		ui._bindEvents();
+
+		// 1. Partial keystroke mid-typing: "1" -> ignored, no save
+		mockInput.value = '1';
+		inputListeners['input']({ target: mockInput });
+		assert.strictEqual(savedSettings.length, 0, 'Must not save on partial input "1"');
+		assert.strictEqual(ui.settings.contextWindow, 200000, 'Must not modify setting on partial input "1"');
+
+		// 2. Mid-typing empty string "" -> must NOT reset to 200000 mid-typing
+		mockInput.value = '';
+		inputListeners['input']({ target: mockInput });
+		assert.strictEqual(savedSettings.length, 0, 'Must not save on empty mid-typing');
+		assert.strictEqual(mockInput.value, '', 'Must not reset input text to 200000 mid-typing');
+
+		// 3. Value < 1000: "999" -> ignored, no save
+		mockInput.value = '999';
+		inputListeners['input']({ target: mockInput });
+		assert.strictEqual(savedSettings.length, 0, 'Must ignore value < 1000');
+
+		// 4. Valid value >= 1000: "150000" -> debounced ~600ms
+		mockInput.value = '150000';
+		inputListeners['input']({ target: mockInput });
+		assert.strictEqual(savedSettings.length, 0, 'Must not save immediately upon valid keystroke');
+
+		// Wait 650ms for debounce timer to fire
+		await new Promise((r) => setTimeout(r, 650));
+		assert.strictEqual(savedSettings.length, 1, 'Must save after 600ms debounce');
+		assert.strictEqual(ui.settings.contextWindow, 150000, 'Must apply 150,000 limit after debounce');
+
+		// 5. Change event (e.g. Enter key) -> applies immediately
+		mockInput.value = '250000';
+		inputListeners['change']({ target: mockInput });
+		assert.strictEqual(savedSettings.length, 2, 'Must apply immediately on change/Enter');
+		assert.strictEqual(ui.settings.contextWindow, 250000, 'Must set 250,000 on change/Enter');
+
+		// 6. Blur event with invalid empty string -> resets to 200,000 default
+		mockInput.value = '';
+		inputListeners['blur']({ target: mockInput });
+		assert.strictEqual(ui.settings.contextWindow, 200000, 'Must reset setting to 200,000 default on blur');
+		assert.strictEqual(mockInput.value, 200000, 'Must reset input field value to 200,000 on blur');
+	});
+
+	// Helper to load real main.js in headless Node environment
+	function setupRealMainEnvironment() {
+		ClaudeCounter.ui.CounterUI.prototype.initialize = function() {
+			this.rootElement = { parentElement: null };
+			this.dom = {
+				ctxMain: { textContent: '' },
+				ctxPct: { textContent: '', title: '', style: {} },
+				ctxBar: { style: {}, parentElement: { setAttribute: () => {} } },
+				cacheText: { textContent: '' }
+			};
+			this.panel = { classList: { toggle: () => {}, remove: () => {}, add: () => {}, contains: () => false }, style: { setProperty: () => {} } };
+		};
+
+		const bridgeListeners = {};
+		global.ClaudeCounter.injectBridgeOnce = () => Promise.resolve();
+		global.ClaudeCounter.bridge = {
+			on: (event, handler) => { bridgeListeners[event] = handler; },
+			emit: (event, data) => { if (bridgeListeners[event]) return bridgeListeners[event](data); },
+			requestConversation: async () => ({ chat_messages: [] }),
+			requestUsage: async () => ({})
+		};
+
+		global.window = {
+			location: { pathname: '/chat/initial' },
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			dispatchEvent: () => {}
+		};
+
+		global.document = {
+			cookie: 'lastActiveOrg=00000000-0000-4000-8000-000000000001',
+			querySelector: () => null,
+			querySelectorAll: () => [],
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			body: null,
+			documentElement: null
+		};
+
+		global.MutationObserver = class {
+			observe() {}
+			disconnect() {}
+		};
+
+		global.history = {
+			pushState: () => {},
+			replaceState: () => {}
+		};
+
+		delete require.cache[require.resolve('../src/content/main.js')];
+		delete global.ClaudeCounter.__started;
+
+		const main = require('../src/content/main.js');
+		return { main, bridgeListeners };
+	}
+
+	// Test 15: Bug 2 - Chat switch during in-flight fetch triggers a separate fetch for chat B
+	await test('Bug 2: Chat A in flight -> switch to B -> a separate fetch for B is issued', async () => {
+		const { main } = setupRealMainEnvironment();
+		const { _internal } = main;
+
+		const requested = [];
+		let resolveA, resolveB;
+		const promiseA = new Promise((r) => { resolveA = r; });
+		const promiseB = new Promise((r) => { resolveB = r; });
+
+		global.ClaudeCounter.bridge.requestConversation = (org, conv) => {
+			requested.push(conv);
+			if (conv === 'chat-A') return promiseA;
+			if (conv === 'chat-B') return promiseB;
+			return Promise.resolve({ chat_messages: [] });
+		};
+
+		// Start fetch for chat-A
+		_internal.setCurrentConversationId('chat-A');
+		const fetchAPromise = _internal.refreshConversation();
+		await Promise.resolve(); // yield microtask to enter inFlight
+
+		assert.deepStrictEqual(requested, ['chat-A'], 'Must issue fetch for chat-A');
+		assert.strictEqual(_internal.getConversationInFlight()?.conversationId, 'chat-A', 'In-flight entry must track chat-A');
+
+		// Switch to chat-B while A is in flight
+		_internal.setCurrentConversationId('chat-B');
+		const fetchBPromise = _internal.refreshConversation();
+		await Promise.resolve(); // yield microtask
+
+		assert.deepStrictEqual(requested, ['chat-A', 'chat-B'], 'Must issue separate fetch for chat-B without reusing chat-A promise');
+		assert.strictEqual(_internal.getConversationInFlight()?.conversationId, 'chat-B', 'In-flight entry must now track chat-B');
+
+		// Resolve chat-A
+		resolveA({ chat_messages: [] });
+		await fetchAPromise;
+		assert.strictEqual(_internal.getConversationInFlight()?.conversationId, 'chat-B', 'Resolving chat-A must NOT clear chat-B in-flight entry');
+
+		// Resolve chat-B
+		resolveB({ chat_messages: [] });
+		await fetchBPromise;
+		assert.strictEqual(_internal.getConversationInFlight(), null, 'Resolving chat-B must clear in-flight entry');
+	});
+
+	// Test 16: Bug 1 - Chat A late metrics never reach the UI after switching to B
+	await test('Bug 1: Chat A late metrics never reach the UI after switching to B', async () => {
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const { _internal } = main;
+
+		const uiCalls = [];
+		global.ClaudeCounter.ui.CounterUI.prototype.setConversationMetrics = function(metrics) {
+			uiCalls.push(metrics);
+		};
+
+		_internal.setCurrentConversationId('chat-A');
+
+		let finishTokenization;
+		const slowTokenPromise = new Promise((r) => { finishTokenization = r; });
+		global.ClaudeCounter.tokens.computeConversationMetrics = () => slowTokenPromise;
+
+		const payloadA = {
+			chat_messages: [{ uuid: 'msg-1', text: 'hello', sender: 'human' }]
+		};
+
+		// 1. Emit cc:conversation for chat-A (triggers real listener in main.js)
+		const handlerPromise = bridgeListeners['cc:conversation']({
+			orgId: '00000000-0000-4000-8000-000000000001',
+			conversationId: 'chat-A',
+			data: payloadA
+		});
+
+		await Promise.resolve(); // yield microtask to enter tokenization
+
+		// 2. User switches to chat-B during tokenization
+		_internal.setCurrentConversationId('chat-B');
+
+		// 3. Late tokenization completes
+		finishTokenization({ totalTokens: 12345, isLoaded: true, cachedUntil: null });
+		await handlerPromise;
+
+		// 4. Stale metrics for chat-A must be dropped and never passed to UI
+		assert.strictEqual(uiCalls.length, 0, 'Late metrics for chat-A must be dropped and never update the UI');
+	});
+
+	// Test 17: Retry timer still cleared on chat switch
+	await test('Retry timer: post-stream retry timer is cleared immediately on chat switch', async () => {
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const { _internal } = main;
+
+		_internal.setCurrentConversationId('chat-A');
+		_internal.setCurrentConversationLeafId('leaf-1');
+
+		// Trigger post-stream refetch where leaf/tokens are unchanged -> schedules 1500ms retry timer
+		await _internal.triggerStreamPostRefetch('chat-A', 'leaf-1', null, Date.now());
+		assert.ok(_internal.getStreamRetryTimeoutId() !== null, 'Must schedule 1500ms retry timer when leaf is unchanged');
+
+		// Simulate chat switch navigation
+		global.window.location.pathname = '/chat/chat-B';
+		await bridgeListeners['cc:urlchange']();
+
+		assert.strictEqual(_internal.getStreamRetryTimeoutId(), null, 'Must immediately clear retry timer upon switching chats');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
-	if (failCount > 0) process.exit(1);
+	process.exit(failCount > 0 ? 1 : 0);
 })();

@@ -783,11 +783,11 @@
 							<input type="color" id="cc-col-low" />
 						</div>
 						<div class="cc-settings-row">
-							<span>Mid (60–85%)</span>
+							<span>Mid (60–90%)</span>
 							<input type="color" id="cc-col-mid" />
 						</div>
 						<div class="cc-settings-row">
-							<span>High / Warning</span>
+							<span>High (90%+)</span>
 							<input type="color" id="cc-col-high" />
 						</div>
 						<div class="cc-settings-row">
@@ -897,7 +897,15 @@
 			});
 
 			// Debug export button
-			if (localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true' || window.__CC_DEBUG) {
+			let isDebugMode = Boolean(globalThis.__CC_DEBUG);
+			try {
+				if (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') {
+					isDebugMode = true;
+				}
+			} catch {
+				// ignore SecurityError / access denied
+			}
+			if (isDebugMode) {
 				this.dom.debugBtn.style.display = 'inline-flex';
 			}
 			this.dom.debugBtn.addEventListener('click', (e) => {
@@ -958,26 +966,64 @@
 
 			// Context Window Override input
 			if (this.dom.contextWindowInput) {
-				const handleContextWindowChange = (val) => {
-					const num = parseInt(val, 10);
-					if (!isNaN(num) && num > 0) {
-						this.settings.contextWindow = num;
-					} else {
-						this.settings.contextWindow = CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+				let ctxDebounceTimer = null;
+
+				const applyAndSave = (num) => {
+					if (ctxDebounceTimer) {
+						clearTimeout(ctxDebounceTimer);
+						ctxDebounceTimer = null;
 					}
+					this.settings.contextWindow = num;
 					this._saveSettings();
 					if (this.lastConversationData) {
 						this.setConversationMetrics(this.lastConversationData);
 					}
 				};
 
-				this.dom.contextWindowInput.addEventListener('change', (e) => {
-					handleContextWindowChange(e.target.value);
-					e.target.value = this.settings.contextWindow;
-				});
+				// Input keystroke listener: debounce ~600ms, ignore < 1000, do not reset mid-typing
 				this.dom.contextWindowInput.addEventListener('input', (e) => {
-					handleContextWindowChange(e.target.value);
+					if (ctxDebounceTimer) {
+						clearTimeout(ctxDebounceTimer);
+						ctxDebounceTimer = null;
+					}
+
+					const raw = (e.target.value || '').trim();
+					// Mid-typing: if empty or < 1000, do NOT save or reset to 200000
+					if (raw === '') return;
+
+					const num = parseInt(raw, 10);
+					if (isNaN(num) || num < 1000) return;
+
+					// Valid value >= 1000: debounce save and apply by ~600ms
+					ctxDebounceTimer = setTimeout(() => {
+						ctxDebounceTimer = null;
+						applyAndSave(num);
+					}, 600);
 				});
+
+				// Change / blur listener: apply immediately on Enter/blur or reset to default if invalid
+				const handleCommit = (e) => {
+					if (ctxDebounceTimer) {
+						clearTimeout(ctxDebounceTimer);
+						ctxDebounceTimer = null;
+					}
+
+					const raw = (e.target.value || '').trim();
+					const num = parseInt(raw, 10);
+
+					if (!isNaN(num) && num >= 1000) {
+						applyAndSave(num);
+						e.target.value = num;
+					} else {
+						// Reset only on blur/commit with an invalid value (< 1000 or empty)
+						const defaultLimit = CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+						applyAndSave(defaultLimit);
+						e.target.value = defaultLimit;
+					}
+				};
+
+				this.dom.contextWindowInput.addEventListener('change', handleCommit);
+				this.dom.contextWindowInput.addEventListener('blur', handleCommit);
 			}
 
 			// Reset buttons
@@ -987,10 +1033,14 @@
 			});
 
 			// Theme change observer
-			const themeObserver = new MutationObserver(() => this.applyThemeAndSettings());
-			themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode', 'class'] });
-			if (document.body) {
-				themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+			if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+				const themeObserver = new MutationObserver(() => this.applyThemeAndSettings());
+				if (document.documentElement) {
+					themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode', 'class'] });
+				}
+				if (document.body) {
+					themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+				}
 			}
 		}
 

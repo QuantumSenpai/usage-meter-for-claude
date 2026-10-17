@@ -48,7 +48,14 @@
 		if (debugLogBuffer.length > CC.CONST.DEBUG_LOG_MAX_ENTRIES) {
 			debugLogBuffer.shift();
 		}
-		const isDebug = (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') || globalThis.__CC_DEBUG;
+		let isDebug = Boolean(globalThis.__CC_DEBUG);
+		try {
+			if (typeof localStorage !== 'undefined' && localStorage.getItem(CC.CONST?.DEBUG_STORAGE_KEY || 'cc_debug') === 'true') {
+				isDebug = true;
+			}
+		} catch {
+			// ignore SecurityError / access denied
+		}
 		if (isDebug) {
 			console.log(`[UsageMeter:Debug] [${category}]`, entry.data);
 		}
@@ -269,13 +276,15 @@
 
 	let currentConversationId = null;
 	let currentConversationLeafId = null;
-	let conversationInFlightPromise = null;
+	let conversationInFlight = null; // { conversationId, promise }
+	let conversationPayloadSeq = 0;
 	let lastStreamEndMs = null;
 	let streamRetryTimeoutId = null;
 
 	async function refreshConversation() {
 		await bridgeReady;
-		if (!currentConversationId) {
+		const convId = currentConversationId;
+		if (!convId) {
 			ui.setConversationLoading();
 			return;
 		}
@@ -283,23 +292,28 @@
 		const orgId = resolveOrgId();
 		if (!orgId) return;
 
-		// Promise deduplication: share single in-flight conversation request
-		if (conversationInFlightPromise) {
-			return await conversationInFlightPromise;
+		// Deduplicate only if in-flight request is for the exact same conversation
+		if (conversationInFlight && conversationInFlight.conversationId === convId) {
+			return await conversationInFlight.promise;
 		}
 
-		conversationInFlightPromise = (async () => {
+		const inFlightEntry = { conversationId: convId, promise: null };
+		inFlightEntry.promise = (async () => {
 			try {
-				logDebug('fetch_conversation_start', { conversationId: currentConversationId });
-				await CC.bridge.requestConversation(orgId, currentConversationId);
+				logDebug('fetch_conversation_start', { conversationId: convId });
+				await CC.bridge.requestConversation(orgId, convId);
 			} catch (err) {
 				logDebug('fetch_conversation_error', { message: err?.message });
 			} finally {
-				conversationInFlightPromise = null;
+				// Clear only if stored entry is still the same object
+				if (conversationInFlight === inFlightEntry) {
+					conversationInFlight = null;
+				}
 			}
 		})();
 
-		return await conversationInFlightPromise;
+		conversationInFlight = inFlightEntry;
+		return await inFlightEntry.promise;
 	}
 
 	async function triggerStreamPostRefetch(convId, preLeafId, preTokens, streamEndMs) {
@@ -404,9 +418,7 @@
 		if (isValidOrgId(orgId)) resolveOrgId(orgId);
 		if (!data || typeof data !== 'object' || !Array.isArray(data.chat_messages)) return;
 
-		if (data.current_leaf_message_uuid) {
-			currentConversationLeafId = data.current_leaf_message_uuid;
-		}
+		const payloadSeq = ++conversationPayloadSeq;
 
 		// Debug scan: log top-level and first message key names + numeric/model matches only
 		if (CC.tokens?.scanPayloadDebugKeys) {
@@ -416,6 +428,22 @@
 
 		try {
 			const metrics = await CC.tokens.computeConversationMetrics(data);
+
+			// Post-tokenization re-check: must match current active chat and be newest sequence
+			if (conversationId !== currentConversationId || payloadSeq !== conversationPayloadSeq) {
+				logDebug('conversation_metrics_dropped_stale', {
+					conversationId,
+					currentConversationId,
+					payloadSeq,
+					latestSeq: conversationPayloadSeq
+				});
+				return;
+			}
+
+			if (data.current_leaf_message_uuid) {
+				currentConversationLeafId = data.current_leaf_message_uuid;
+			}
+
 			const elapsedMs = lastStreamEndMs ? (Date.now() - lastStreamEndMs) : null;
 			logDebug('metrics_computed', {
 				tokens: metrics.totalTokens,
@@ -504,7 +532,10 @@
 	// Mount immediately
 	ensurePanelAttached();
 
-	setInterval(ensurePanelAttached, 1000);
+	const mountInterval = setInterval(ensurePanelAttached, 1000);
+	if (typeof mountInterval?.unref === 'function') {
+		mountInterval.unref();
+	}
 
 	// ==========================================
 	// SPA Navigation Watcher
@@ -525,6 +556,7 @@
 
 		if (!currentConversationId) {
 			currentConversationLeafId = null;
+			conversationPayloadSeq++;
 			if (streamRetryTimeoutId) {
 				clearTimeout(streamRetryTimeoutId);
 				streamRetryTimeoutId = null;
@@ -534,6 +566,7 @@
 		} else {
 			if (convChanged) {
 				currentConversationLeafId = null;
+				conversationPayloadSeq++;
 				if (streamRetryTimeoutId) {
 					clearTimeout(streamRetryTimeoutId);
 					streamRetryTimeoutId = null;
@@ -552,11 +585,14 @@
 	window.addEventListener('popstate', handleUrlChange);
 	CC.bridge.on('cc:urlchange', handleUrlChange);
 
-	setInterval(() => {
+	const pollInterval = setInterval(() => {
 		if (window.location.pathname !== lastKnownPath) {
 			handleUrlChange();
 		}
 	}, 500);
+	if (typeof pollInterval?.unref === 'function') {
+		pollInterval.unref();
+	}
 
 	// Sidebar & in-page chat navigation click listener
 	document.addEventListener('click', (e) => {
@@ -605,13 +641,27 @@
 		}
 	}
 
-	setInterval(tick, 1000);
+	const tickInterval = setInterval(tick, 1000);
+	if (typeof tickInterval?.unref === 'function') {
+		tickInterval.unref();
+	}
 
 	// Initial trigger
 	handleUrlChange();
 
 	CC.mount = { resolveComposerCard };
-	CC._internal = { triggerStreamPostRefetch, refreshConversation, refreshUsage };
+	CC._internal = {
+		triggerStreamPostRefetch,
+		refreshConversation,
+		refreshUsage,
+		getConversationInFlight: () => conversationInFlight,
+		getCurrentConversationId: () => currentConversationId,
+		setCurrentConversationId: (id) => { currentConversationId = id; },
+		getCurrentConversationLeafId: () => currentConversationLeafId,
+		setCurrentConversationLeafId: (id) => { currentConversationLeafId = id; },
+		getStreamRetryTimeoutId: () => streamRetryTimeoutId,
+		getConversationPayloadSeq: () => conversationPayloadSeq
+	};
 
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = {
@@ -619,7 +669,9 @@
 			getOrgIdFromCookie,
 			resolveOrgId,
 			getConversationId,
-			triggerStreamPostRefetch
+			triggerStreamPostRefetch,
+			refreshConversation,
+			_internal: CC._internal
 		};
 	}
 })();

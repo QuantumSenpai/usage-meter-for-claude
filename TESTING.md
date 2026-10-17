@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.6)
+# Testing Checklist: Usage Meter for Claude (v0.5.7)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -315,3 +315,31 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
    - Interception logic and normalization covered via `sse_message_limit.synthetic.json`.
 3. **Real Claude Model Context Windows:**
    - Claude web responses do not supply a context window limit or model ID field in captured conversation payloads.
+
+---
+
+### 18. Chat Switch & Context Input Polish (v0.5.7 Bugfixes)
+- **Preconditions:** Extension reloaded on `https://claude.ai`.
+- **Steps:**
+  1. **Chat Switch During In-Flight Fetch (Bug 2):**
+     - Rapidly click from Chat A to Chat B in the sidebar.
+     - *Expected:* Chat B does not get stuck on `" — "`. A distinct fetch is issued for Chat B, and Chat B's token count renders once fetched.
+  2. **Chat Switch During Tokenization (Bug 1):**
+     - Switch from a long chat (Chat A) to a short/empty chat (Chat B) while tokenization is in flight.
+     - *Expected:* Chat A's token count is discarded (`conversation_metrics_dropped_stale` in debug log) and never appears in Chat B.
+  3. **Loading State on Chat Switch (Check 3):**
+     - Switch between chats.
+     - *Expected:* Context row immediately clears the old count to `"—"` while fetching the new conversation.
+  4. **Settings Drawer Color Tier Labels (Polish 4):**
+     - Open Settings drawer (gear icon).
+     - *Expected:* Custom Colors section displays labels: `"Low (0–60%)"`, `"Mid (60–90%)"`, and `"High (90%+)"`.
+  5. **Context Window Input Keystroke Debouncing (Polish 4):**
+     - Clear the Context Window input box to empty mid-typing.
+     - *Expected:* Field does NOT snap back to `200000` while typing; settings are not saved.
+     - Type `< 1000` (e.g. `500`): ignored without saving.
+     - Type `150000` and stop: saves and applies after ~600ms debounce.
+     - Type `300000` and press Enter: applies immediately on `change`.
+     - Clear box completely and click outside (blur): resets to `200000` default.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
