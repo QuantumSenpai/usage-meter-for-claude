@@ -15,7 +15,9 @@ const createMockStorage = () => {
 	return {
 		getItem: (k) => store[k] || null,
 		setItem: (k, v) => { store[k] = String(v); },
-		removeItem: (k) => { delete store[k]; }
+		removeItem: (k) => { delete store[k]; },
+		key: (i) => Object.keys(store)[i] || null,
+		get length() { return Object.keys(store).length; }
 	};
 };
 
@@ -700,6 +702,7 @@ async function test(name, fn) {
 	});
 
 	// Helper to load real main.js in headless Node environment
+	const originalCounterUIInitialize = ClaudeCounter.ui.CounterUI.prototype.initialize;
 	function setupRealMainEnvironment() {
 		ClaudeCounter.ui.CounterUI.prototype.initialize = function() {
 			this.rootElement = { parentElement: null };
@@ -1161,6 +1164,444 @@ async function test(name, fn) {
 		// 4. Now refreshConversation proceeds and issues fetch
 		await _internal.refreshConversation();
 		assert.strictEqual(fetchCalls, 1, 'Conversation fetch must proceed after user enables Context');
+	});
+
+	// =========================================================================
+	// Reproduction Matrix & Safety Tests (0.6.1 Bug Fixes)
+	// =========================================================================
+	function setupDOMForRealCounterUI() {
+		ClaudeCounter.ui.CounterUI.prototype.initialize = originalCounterUIInitialize;
+
+		function parseHTMLInto(html, parent) {
+			const cleaned = html.replace(/<!--[\s\S]*?-->/g, '');
+			const tagRegex = /<(?:\/([a-zA-Z0-9\-]+)|([a-zA-Z0-9\-]+)([^>]*?)(\/)?)>/g;
+			const voidTags = new Set(['input', 'img', 'br', 'hr', 'rect', 'circle', 'path']);
+			let stack = [parent];
+			let match;
+
+			while ((match = tagRegex.exec(cleaned)) !== null) {
+				const [full, closeTag, openTag, attrStr, selfClose] = match;
+				if (closeTag) {
+					const tagUpper = closeTag.toUpperCase();
+					if (stack.length > 1 && stack[stack.length - 1].tagName === tagUpper) {
+						stack.pop();
+					}
+				} else if (openTag) {
+					const el = new TestDOMElement(openTag);
+					if (attrStr) {
+						const attrRegex = /([a-zA-Z0-9\-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+						let attrMatch;
+						while ((attrMatch = attrRegex.exec(attrStr)) !== null) {
+							const name = attrMatch[1];
+							const val = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
+							el.setAttribute(name, val);
+							if (name.startsWith('data-')) {
+								const dataKey = name.slice(5).replace(/-([a-z])/g, (_, g) => g.toUpperCase());
+								el.dataset[dataKey] = val;
+							}
+						}
+					}
+					stack[stack.length - 1].appendChild(el);
+					const isVoid = voidTags.has(openTag.toLowerCase()) || Boolean(selfClose);
+					if (!isVoid) {
+						stack.push(el);
+					}
+				}
+			}
+		}
+
+		class TestDOMElement {
+			constructor(tagName = 'div') {
+				this.tagName = tagName.toUpperCase();
+				this.id = '';
+				this.className = '';
+				this.children = [];
+				this.parentElement = null;
+				this.shadowRoot = null;
+				this.style = {
+					properties: {},
+					setProperty(k, v) { this.properties[k] = String(v); },
+					getPropertyValue(k) { return this.properties[k] || ''; }
+				};
+				this.attributes = {};
+				this._classes = new Set();
+				this.classList = {
+					add: (...cls) => {
+						for (const c of cls) this._classes.add(c);
+						this.className = Array.from(this._classes).join(' ');
+					},
+					remove: (...cls) => {
+						for (const c of cls) this._classes.delete(c);
+						this.className = Array.from(this._classes).join(' ');
+					},
+					toggle: (c, force) => {
+						if (force === undefined) {
+							if (this._classes.has(c)) this._classes.delete(c);
+							else this._classes.add(c);
+						} else if (force) {
+							this._classes.add(c);
+						} else {
+							this._classes.delete(c);
+						}
+						this.className = Array.from(this._classes).join(' ');
+						return this._classes.has(c);
+					},
+					contains: (c) => this._classes.has(c)
+				};
+				this.listeners = {};
+				this.dataset = {};
+				this.textContent = '';
+				this.title = '';
+				this.value = '';
+				this.checked = false;
+			}
+
+			set innerHTML(html) {
+				this._innerHTML = html;
+				this.children = [];
+				parseHTMLInto(html, this);
+			}
+
+			get innerHTML() {
+				return this._innerHTML || '';
+			}
+
+			attachShadow() {
+				this.shadowRoot = new TestShadowRoot(this);
+				return this.shadowRoot;
+			}
+
+			appendChild(child) {
+				child.parentElement = this;
+				this.children.push(child);
+				return child;
+			}
+
+			setAttribute(k, v) {
+				this.attributes[k] = String(v);
+				if (k === 'id') this.id = String(v);
+				if (k === 'class') {
+					this.className = String(v);
+					this._classes = new Set(this.className.split(/\s+/).filter(Boolean));
+				}
+			}
+
+			getAttribute(k) {
+				return this.attributes[k] || null;
+			}
+
+			addEventListener(evt, fn) {
+				if (!this.listeners[evt]) this.listeners[evt] = [];
+				this.listeners[evt].push(fn);
+			}
+
+			closest(sel) {
+				let cur = this;
+				while (cur) {
+					if (cur.matches && cur.matches(sel)) return cur;
+					cur = cur.parentElement;
+				}
+				return null;
+			}
+
+			matches(sel) {
+				if (sel.startsWith('#')) return this.id === sel.slice(1);
+				if (sel.startsWith('.')) return this.classList.contains(sel.slice(1));
+				return false;
+			}
+		}
+
+		class TestShadowRoot {
+			constructor(host) {
+				this.host = host;
+				this.children = [];
+				this._elementsById = new Map();
+			}
+
+			appendChild(child) {
+				child.parentElement = this;
+				this.children.push(child);
+				this._indexElements(child);
+				return child;
+			}
+
+			_indexElements(el) {
+				if (el.id) this._elementsById.set(el.id, el);
+				if (el.children) {
+					for (const c of el.children) this._indexElements(c);
+				}
+			}
+
+			getElementById(id) {
+				return this._elementsById.get(id) || null;
+			}
+
+			querySelectorAll(sel) {
+				const res = [];
+				const walk = (el) => {
+					if (el.matches && el.matches(sel)) res.push(el);
+					if (el.children) {
+						for (const c of el.children) walk(c);
+					}
+				};
+				for (const c of this.children) walk(c);
+				return res;
+			}
+		}
+
+		global.document = {
+			documentElement: new TestDOMElement('html'),
+			body: new TestDOMElement('body'),
+			createElement: (tag) => new TestDOMElement(tag)
+		};
+		global.window = {
+			matchMedia: () => ({ matches: false })
+		};
+		global.MutationObserver = class {
+			observe() {}
+			disconnect() {}
+		};
+	}
+
+	// Test 26: Reproduction Case 1: 0.5.3 saved settings with showSession: false, showWeekly: false -> migrated to visible and not empty
+	await test('Reproduction Case 1: 0.5.3 saved settings (showSession: false, showWeekly: false) -> migrated to visible and panel not empty', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			preset: 'default',
+			lowColor: '#10b981',
+			midColor: '#f59e0b',
+			highColor: '#ef4444',
+			accentColor: '#d97706',
+			opacity: 0.94,
+			showSession: false,
+			showWeekly: false
+		}));
+
+		const ui = new CounterUI();
+		ui.initialize();
+		ui.renderSessionAndWeekly();
+
+		assert.strictEqual(ui.settings.v061_migrated, true, 'Must set v061_migrated=true');
+		assert.strictEqual(ui.settings.showSession, true, 'showSession must be migrated to true');
+		assert.strictEqual(ui.settings.showWeekly, true, 'showWeekly must be migrated to true');
+
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeek = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.ok(rowSess && !rowSess.classList.contains('cc-hidden'), 'Session row must not be cc-hidden');
+		assert.ok(rowWeek && !rowWeek.classList.contains('cc-hidden'), 'Weekly row must not be cc-hidden');
+
+		const gearBtn = ui.shadowRoot.getElementById('cc-gear-btn');
+		assert.ok(gearBtn, 'Gear button must exist');
+		const isPanelEmpty = rowSess.classList.contains('cc-hidden') && rowWeek.classList.contains('cc-hidden');
+		assert.strictEqual(isPanelEmpty, false, 'Panel must not be empty');
+	});
+
+	// Test 27: Reproduction Case 2: 0.5.5 / 0.5.7 saved settings with showSession: false, showWeekly: false -> migrated to visible
+	await test('Reproduction Case 2: 0.5.5 / 0.5.7 saved settings (showSession: false, showWeekly: false) -> migrated to visible', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			preset: 'default',
+			lowColor: '#10b981',
+			midColor: '#f59e0b',
+			highColor: '#ef4444',
+			accentColor: '#d97706',
+			opacity: 0.94,
+			showSession: false,
+			showWeekly: false,
+			contextWindow: 200000
+		}));
+
+		const ui = new CounterUI();
+		ui.initialize();
+
+		assert.strictEqual(ui.settings.v061_migrated, true, 'Must set v061_migrated=true');
+		assert.strictEqual(ui.settings.showSession, true, 'showSession must be true');
+		assert.strictEqual(ui.settings.showWeekly, true, 'showWeekly must be true');
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		assert.strictEqual(rowSess.classList.contains('cc-hidden'), false, 'Session row must not be cc-hidden');
+	});
+
+	// Test 28: Reproduction Case 3: 0.6.0 post-migration with preserved showSession: false, showWeekly: false -> migrated by v061
+	await test('Reproduction Case 3: 0.6.0 post-migration with preserved showSession: false, showWeekly: false -> migrated by v061', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			preset: 'default',
+			lowColor: '#10b981',
+			midColor: '#f59e0b',
+			highColor: '#ef4444',
+			accentColor: '#d97706',
+			opacity: 0.94,
+			showSession: false,
+			showWeekly: false,
+			showContext: false,
+			showCache: false,
+			contextWindow: 200000,
+			v060_migrated: true
+		}));
+
+		const ui = new CounterUI();
+		ui.initialize();
+
+		assert.strictEqual(ui.settings.v061_migrated, true, 'Must set v061_migrated=true');
+		assert.strictEqual(ui.settings.showSession, true, 'showSession must be true');
+		assert.strictEqual(ui.settings.showWeekly, true, 'showWeekly must be true');
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeek = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.strictEqual(rowSess.classList.contains('cc-hidden'), false);
+		assert.strictEqual(rowWeek.classList.contains('cc-hidden'), false);
+	});
+
+	// Test 29: Reproduction Case 4: 0.5.7 showSession: false, showWeekly: false + cc_expanded: false -> rows visible, not empty
+	await test('Reproduction Case 4: 0.5.7 showSession: false, showWeekly: false + cc_expanded: false -> rows visible, not empty', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			preset: 'default',
+			lowColor: '#10b981',
+			midColor: '#f59e0b',
+			highColor: '#ef4444',
+			accentColor: '#d97706',
+			opacity: 0.94,
+			showSession: false,
+			showWeekly: false
+		}));
+		storage.setItem('cc_expanded', 'false');
+
+		const ui = new CounterUI();
+		ui.initialize();
+
+		assert.strictEqual(ui.isExpanded, false);
+		assert.strictEqual(ui.settings.showSession, true);
+		assert.strictEqual(ui.settings.showWeekly, true);
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		assert.strictEqual(rowSess.classList.contains('cc-hidden'), false);
+	});
+
+	// Test 30: Reproduction Case 5: Wrong type: null for showSession/showWeekly -> falls back to boolean defaults
+	await test('Reproduction Case 5: Wrong type: null for showSession/showWeekly -> falls back to boolean defaults', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			showSession: null,
+			showWeekly: null,
+			v061_migrated: true
+		}));
+
+		const ui = new CounterUI();
+		assert.strictEqual(ui.settings.showSession, true, 'null showSession must fall back to default true');
+		assert.strictEqual(ui.settings.showWeekly, true, 'null showWeekly must fall back to default true');
+	});
+
+	// Test 31: Reproduction Case 6: Persistent header and gear button render and are accessible in empty state
+	await test('Reproduction Case 6: Persistent header and gear button render and are accessible in empty state', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+
+		const ui = new CounterUI();
+		ui.initialize();
+		// Empty state: no usage data yet
+		ui.renderSessionAndWeekly();
+
+		const header = ui.shadowRoot.getElementById('cc-header');
+		assert.ok(header, 'Persistent header must exist in DOM');
+		const gearBtn = ui.shadowRoot.getElementById('cc-gear-btn');
+		assert.ok(gearBtn, 'Gear button must exist');
+		assert.strictEqual(gearBtn.parentElement.id, 'cc-header-actions', 'Gear button must be inside persistent header, not row');
+		assert.strictEqual(gearBtn.closest('.cc-hidden'), null, 'Gear button must never be hidden');
+	});
+
+	// Test 32: Reproduction Case 7: Settings validation & range clamping: invalid preset, invalid colors, clamped opacity, contextWindow
+	await test('Reproduction Case 7: Settings validation & range clamping: invalid preset, invalid colors, clamped opacity, contextWindow', () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', JSON.stringify({
+			preset: 'invalid_preset',
+			lowColor: 'not-a-color',
+			midColor: '',
+			highColor: null,
+			opacity: 0.1, // below slider range min 50%
+			contextWindow: 50 // below min 1000
+		}));
+
+		const ui = new CounterUI();
+		assert.strictEqual(ui.settings.preset, 'default', 'Invalid preset must fall back to default');
+		assert.strictEqual(ui.settings.lowColor, PRESETS.default.low, 'Invalid lowColor must fall back to default');
+		assert.strictEqual(ui.settings.midColor, PRESETS.default.mid, 'Empty midColor must fall back to default');
+		assert.strictEqual(ui.settings.highColor, PRESETS.default.high, 'Null highColor must fall back to default');
+		assert.strictEqual(ui.settings.opacity, 0.50, 'Opacity below 0.50 must be clamped to 0.50');
+		assert.strictEqual(ui.settings.contextWindow, 200000, 'ContextWindow < 1000 must fall back to default 200000');
+	});
+
+	// Test 33: Reproduction Case 8: Render error fallback: catches throw, logs render_error, and displays fallback rows with "—"
+	await test('Reproduction Case 8: Render error fallback: catches throw, logs render_error, and displays fallback rows with "—"', () => {
+		setupDOMForRealCounterUI();
+		const debugLogs = [];
+		const ui = new CounterUI({
+			onDebugLog: (cat, data) => debugLogs.push({ cat, data })
+		});
+		ui.initialize();
+
+		// Trigger renderSessionAndWeekly with malformed currentNormalizedState causing error
+		ui.currentNormalizedState = {
+			session: {
+				get pctUsed() {
+					throw new Error('Simulated session calculation failure');
+				}
+			}
+		};
+
+		// Should not throw uncaught error
+		ui.renderSessionAndWeekly();
+
+		const errorLog = debugLogs.find(l => l.cat === 'render_error');
+		assert.ok(errorLog, 'Must log render_error event');
+		assert.strictEqual(errorLog.data.name, 'Error');
+		assert.strictEqual(errorLog.data.message, 'Simulated session calculation failure');
+
+		// Fallback rows rendered with "—" and visible
+		const sessPct = ui.shadowRoot.getElementById('cc-sess-pct');
+		const rowSess = ui.shadowRoot.getElementById('cc-row-session');
+		assert.strictEqual(sessPct.textContent, '—', 'Fallback row must show —');
+		assert.strictEqual(rowSess.classList.contains('cc-hidden'), false, 'Fallback row must be visible');
+	});
+
+	// Test 34: Reproduction Case 9: panel_render_state debug log emitted with booleans only and cc_* key names
+	await test('Reproduction Case 9: panel_render_state debug log emitted with booleans only and cc_* key names', () => {
+		setupDOMForRealCounterUI();
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_settings', '{}');
+		storage.setItem('cc_expanded', 'true');
+		storage.setItem('unrelated_key', 'secret_val');
+
+		const debugLogs = [];
+		const ui = new CounterUI({
+			onDebugLog: (cat, data) => debugLogs.push({ cat, data })
+		});
+		ui.initialize();
+		ui.renderSessionAndWeekly();
+
+		const stateLog = debugLogs.find(l => l.cat === 'panel_render_state');
+		assert.ok(stateLog, 'Must log panel_render_state');
+		assert.strictEqual(typeof stateLog.data.showSession, 'boolean');
+		assert.strictEqual(typeof stateLog.data.showWeekly, 'boolean');
+		assert.strictEqual(typeof stateLog.data.showContext, 'boolean');
+		assert.strictEqual(typeof stateLog.data.showCache, 'boolean');
+		assert.strictEqual(typeof stateLog.data.rowsInDom, 'boolean');
+		assert.ok(Array.isArray(stateLog.data.keys), 'Must contain list of keys');
+		assert.ok(stateLog.data.keys.includes('cc_settings'));
+		assert.ok(stateLog.data.keys.includes('cc_expanded'));
+		assert.strictEqual(stateLog.data.keys.includes('unrelated_key'), false, 'Must only include cc_* keys');
+		assert.strictEqual(JSON.stringify(stateLog.data).includes('secret_val'), false, 'Never log values');
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

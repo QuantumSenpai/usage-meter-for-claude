@@ -76,6 +76,10 @@
 		}
 	}
 
+	function isValidHexColor(val) {
+		return typeof val === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(val.trim());
+	}
+
 	// Preset color palettes
 	const PRESETS = {
 		default: {
@@ -302,6 +306,31 @@
 			flex-direction: column;
 			gap: 6px;
 			padding: 7px 12px;
+		}
+
+		/* Header bar: title & persistent actions (always visible) */
+		.cc-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 0 0 3px 0;
+			margin-bottom: 2px;
+			border-bottom: 1px solid var(--cc-border, rgba(255, 255, 255, 0.06));
+		}
+
+		.cc-header-title {
+			font-size: 11px;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			color: var(--cc-text-muted);
+			user-select: none;
+		}
+
+		.cc-header-actions {
+			display: flex;
+			align-items: center;
+			gap: 4px;
 		}
 
 		/* Row layout: clean aligned columns */
@@ -702,10 +731,11 @@
 	`;
 
 	class CounterUI {
-		constructor({ onUsageRefresh, onCopyDebug, onToggleContextOrCache } = {}) {
+		constructor({ onUsageRefresh, onCopyDebug, onToggleContextOrCache, onDebugLog } = {}) {
 			this.onUsageRefresh = onUsageRefresh || null;
 			this.onCopyDebug = onCopyDebug || null;
 			this.onToggleContextOrCache = onToggleContextOrCache || null;
+			this.onDebugLog = onDebugLog || null;
 
 			this.rootElement = null;
 			this.shadowRoot = null;
@@ -772,35 +802,96 @@
 				showContext: false,
 				showCache: false,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000,
-				v060_migrated: true
+				v060_migrated: true,
+				v061_migrated: true
 			};
 			try {
 				const saved = localStorage.getItem('cc_settings');
 				if (saved) {
-					const parsed = JSON.parse(saved);
+					let parsed = JSON.parse(saved);
 					if (parsed && typeof parsed === 'object') {
+						let needsSave = false;
+
+						// Migration 1: v060 migration (hide Context & Cache by default)
 						if (!parsed.v060_migrated) {
 							parsed.showContext = false;
 							parsed.showCache = false;
 							parsed.v060_migrated = true;
+							needsSave = true;
+						}
+
+						// Migration 2: v061 migration: force showSession and showWeekly visible once
+						if (!parsed.v061_migrated) {
+							parsed.showSession = true;
+							parsed.showWeekly = true;
+							parsed.v061_migrated = true;
+							needsSave = true;
+						}
+
+						// Key validation (a) and fallback per key:
+						// 1. preset validation
+						if (typeof parsed.preset !== 'string' || !PRESETS[parsed.preset]) {
+							parsed.preset = defaults.preset;
+						}
+
+						// 2. colors validation (must be valid hex colors)
+						if (!isValidHexColor(parsed.lowColor)) {
+							parsed.lowColor = defaults.lowColor;
+						}
+						if (!isValidHexColor(parsed.midColor)) {
+							parsed.midColor = defaults.midColor;
+						}
+						if (!isValidHexColor(parsed.highColor)) {
+							parsed.highColor = defaults.highColor;
+						}
+						if (!isValidHexColor(parsed.accentColor)) {
+							parsed.accentColor = defaults.accentColor;
+						}
+
+						// 3. opacity (c): clamp to [0.50, 1.00] (slider range: min="50" max="100")
+						let op = Number(parsed.opacity);
+						if (isNaN(op)) {
+							op = defaults.opacity;
+						} else {
+							op = Math.max(0.50, Math.min(1.0, op));
+						}
+						parsed.opacity = op;
+
+						// 4. contextWindow validation
+						let cw = Number(parsed.contextWindow);
+						if (isNaN(cw) || cw < 1000 || cw > 10000000) {
+							parsed.contextWindow = defaults.contextWindow;
+						} else {
+							parsed.contextWindow = Math.round(cw);
+						}
+
+						// 5. booleans validation
+						if (typeof parsed.showSession !== 'boolean') {
+							parsed.showSession = defaults.showSession;
+						}
+						if (typeof parsed.showWeekly !== 'boolean') {
+							parsed.showWeekly = defaults.showWeekly;
+						}
+						if (typeof parsed.showContext !== 'boolean') {
+							parsed.showContext = defaults.showContext;
+						}
+						if (typeof parsed.showCache !== 'boolean') {
+							parsed.showCache = defaults.showCache;
+						}
+
+						if (needsSave) {
 							try {
 								localStorage.setItem('cc_settings', JSON.stringify(Object.assign({}, parsed)));
 							} catch {
 								// ignore
 							}
 						}
+
+						return Object.assign(defaults, parsed);
 					}
-					if (parsed && typeof parsed.contextWindow === 'number' && !isNaN(parsed.contextWindow) && parsed.contextWindow > 0) {
-						// valid number
-					} else if (parsed && parsed.contextWindow) {
-						const num = parseInt(parsed.contextWindow, 10);
-						if (!isNaN(num) && num > 0) parsed.contextWindow = num;
-						else delete parsed.contextWindow;
-					}
-					return Object.assign(defaults, parsed);
 				}
 			} catch {
-				// ignore
+				// ignore corrupt JSON
 			}
 			return defaults;
 		}
@@ -812,6 +903,34 @@
 				// ignore
 			}
 			this.applyThemeAndSettings();
+		}
+
+		logPanelRenderState() {
+			if (!this.onDebugLog) return;
+			let ccKeys = [];
+			try {
+				if (typeof localStorage !== 'undefined') {
+					for (let i = 0; i < localStorage.length; i++) {
+						const k = localStorage.key(i);
+						if (k && k.startsWith('cc_')) {
+							ccKeys.push(k);
+						}
+					}
+					if (ccKeys.length === 0 && Object.keys(localStorage).length > 0) {
+						ccKeys = Object.keys(localStorage).filter(k => typeof k === 'string' && k.startsWith('cc_'));
+					}
+				}
+			} catch {
+				// ignore
+			}
+			this.onDebugLog('panel_render_state', {
+				showSession: Boolean(this.settings.showSession),
+				showWeekly: Boolean(this.settings.showWeekly),
+				showContext: Boolean(this.settings.showContext),
+				showCache: Boolean(this.settings.showCache),
+				rowsInDom: Boolean(this.dom?.rowSession && this.dom?.rowWeekly),
+				keys: ccKeys
+			});
 		}
 
 		shouldFetchConversation() {
@@ -834,8 +953,21 @@
 			this.panel = panel;
 
 			panel.innerHTML = `
-				<!-- Main Panel Content: Session & Weekly always visible -->
+				<!-- Main Panel Content: Header, Session & Weekly always visible -->
 				<div class="cc-usage-container">
+					<!-- Header bar: title & persistent action buttons (always visible) -->
+					<div class="cc-header" id="cc-header">
+						<span class="cc-header-title">Usage Limits</span>
+						<div class="cc-header-actions" id="cc-header-actions">
+							<button class="cc-btn" id="cc-debug-btn" title="Copy Diagnostic Log" style="display: none;">
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+							</button>
+							<button class="cc-btn" id="cc-gear-btn" title="Settings &amp; Colors">
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+							</button>
+						</div>
+					</div>
+
 					<!-- Session 5h Row -->
 					<div class="cc-row cc-row--session" id="cc-row-session">
 						<div class="cc-row-label-col">
@@ -850,14 +982,6 @@
 						<div class="cc-stat-col">
 							<span class="cc-val-pct" id="cc-sess-pct">—</span>
 							<span class="cc-val-reset" id="cc-sess-reset">Updates after your next message</span>
-						</div>
-						<div class="cc-actions-col">
-							<button class="cc-btn" id="cc-debug-btn" title="Copy Diagnostic Log" style="display: none;">
-								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
-							</button>
-							<button class="cc-btn" id="cc-gear-btn" title="Settings &amp; Colors">
-								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-							</button>
 						</div>
 					</div>
 
@@ -876,7 +1000,6 @@
 							<span class="cc-val-pct" id="cc-week-pct">—</span>
 							<span class="cc-val-reset" id="cc-week-reset">Updates after your next message</span>
 						</div>
-						<div class="cc-actions-spacer"></div>
 					</div>
 
 					<!-- Context Row (Default hidden) -->
@@ -893,7 +1016,6 @@
 							<span class="cc-val-pct" id="cc-ctx-pct">—</span>
 							<span class="cc-val-reset" id="cc-ctx-main">— / 200k</span>
 						</div>
-						<div class="cc-actions-spacer"></div>
 					</div>
 
 					<!-- Cache Row (Default hidden) -->
@@ -909,7 +1031,6 @@
 						<div class="cc-stat-col">
 							<span class="cc-val-reset" id="cc-cache-text">—</span>
 						</div>
-						<div class="cc-actions-spacer"></div>
 					</div>
 				</div>
 
@@ -1240,6 +1361,7 @@
 				showContext: false,
 				showCache: false,
 				v060_migrated: true,
+				v061_migrated: true,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000
 			};
 			this._saveSettings();
@@ -1265,11 +1387,13 @@
 			this.panel.classList.toggle('cc-theme-light', !isDark);
 
 			// Apply color vars
-			const low = this.settings.lowColor || PRESETS.default.low;
-			const mid = this.settings.midColor || PRESETS.default.mid;
-			const high = this.settings.highColor || PRESETS.default.high || '#ef4444';
-			const accent = this.settings.accentColor || PRESETS.default.accent;
-			const opacity = this.settings.opacity ?? 0.94;
+			const low = isValidHexColor(this.settings.lowColor) ? this.settings.lowColor : PRESETS.default.low;
+			const mid = isValidHexColor(this.settings.midColor) ? this.settings.midColor : PRESETS.default.mid;
+			const high = isValidHexColor(this.settings.highColor) ? this.settings.highColor : (PRESETS.default.high || '#ef4444');
+			const accent = isValidHexColor(this.settings.accentColor) ? this.settings.accentColor : PRESETS.default.accent;
+			const opacity = typeof this.settings.opacity === 'number' && !isNaN(this.settings.opacity)
+				? Math.max(0.50, Math.min(1.0, this.settings.opacity))
+				: 0.94;
 
 			this.panel.style.setProperty('--cc-color-low', low);
 			this.panel.style.setProperty('--cc-color-mid', mid);
@@ -1298,7 +1422,7 @@
 			if (this.dom.rowCache) this.dom.rowCache.classList.toggle('cc-hidden', !this.settings.showCache);
 
 			// Context Window input in drawer is only visible if showContext is true
-			const ctxWindowRow = this.shadowRoot.getElementById('cc-context-window-row');
+			const ctxWindowRow = this.shadowRoot?.getElementById ? this.shadowRoot.getElementById('cc-context-window-row') : null;
 			if (ctxWindowRow) {
 				ctxWindowRow.classList.toggle('cc-hidden', !this.settings.showContext);
 			}
@@ -1312,6 +1436,7 @@
 			}
 
 			this.refreshBarColors();
+			this.logPanelRenderState();
 		}
 
 		refreshBarColors() {
@@ -1518,160 +1643,183 @@
 			this.tick();
 		}
 
+		_renderFallbackRows() {
+			if (this.dom.rowSession) this.dom.rowSession.classList.remove('cc-hidden');
+			if (this.dom.rowWeekly) this.dom.rowWeekly.classList.remove('cc-hidden');
+			if (this.dom.sessPct) this.dom.sessPct.textContent = '—';
+			if (this.dom.sessReset) this.dom.sessReset.textContent = '—';
+			if (this.dom.sessBar) this.dom.sessBar.style.width = '0%';
+			if (this.dom.weekPct) this.dom.weekPct.textContent = '—';
+			if (this.dom.weekReset) this.dom.weekReset.textContent = '—';
+			if (this.dom.weekBar) this.dom.weekBar.style.width = '0%';
+		}
+
 		renderSessionAndWeekly(now = Date.now()) {
 			if (!this.panel) return;
-			const norm = this.currentNormalizedState;
-			const sess = norm?.session;
-			const week = norm?.weekly;
-			const capturedAt = norm?.capturedAt;
+			try {
+				const norm = this.currentNormalizedState;
+				const sess = norm?.session;
+				const week = norm?.weekly;
+				const capturedAt = norm?.capturedAt;
 
-			const rowTooltip = capturedAt ? formatLastMessageTime(capturedAt) : '';
-			if (this.dom.rowSession) this.dom.rowSession.title = rowTooltip;
-			if (this.dom.rowWeekly) this.dom.rowWeekly.title = rowTooltip;
+				const rowTooltip = capturedAt ? formatLastMessageTime(capturedAt) : '';
+				if (this.dom.rowSession) this.dom.rowSession.title = rowTooltip;
+				if (this.dom.rowWeekly) this.dom.rowWeekly.title = rowTooltip;
 
-			const lowColor = this.settings.lowColor || PRESETS.default.low || '#10b981';
-			const midColor = this.settings.midColor || PRESETS.default.mid || '#f59e0b';
-			const highColor = this.settings.highColor || PRESETS.default.high || '#ef4444';
+				const lowColor = isValidHexColor(this.settings.lowColor) ? this.settings.lowColor : (PRESETS.default.low || '#10b981');
+				const midColor = isValidHexColor(this.settings.midColor) ? this.settings.midColor : (PRESETS.default.mid || '#f59e0b');
+				const highColor = isValidHexColor(this.settings.highColor) ? this.settings.highColor : (PRESETS.default.high || '#ef4444');
 
-			const getTierColor = (pct) => {
-				if (typeof pct !== 'number') return lowColor;
-				if (pct >= 90) return highColor;
-				if (pct >= 60) return midColor;
-				return lowColor;
-			};
+				const getTierColor = (pct) => {
+					if (typeof pct !== 'number') return lowColor;
+					if (pct >= 90) return highColor;
+					if (pct >= 60) return midColor;
+					return lowColor;
+				};
 
-			// Render Session (5h)
-			const sessResetsAtMs = sess?.resetsAt ? Date.parse(sess.resetsAt) : null;
-			const sessHasData = sess && typeof sess.pctUsed === 'number' && !isNaN(sess.pctUsed);
-			const sessRolledOver = sessResetsAtMs && now >= sessResetsAtMs;
+				// Render Session (5h)
+				const sessResetsAtMs = sess?.resetsAt ? Date.parse(sess.resetsAt) : null;
+				const sessHasData = sess && typeof sess.pctUsed === 'number' && !isNaN(sess.pctUsed);
+				const sessRolledOver = sessResetsAtMs && now >= sessResetsAtMs;
 
-			if (!sessHasData) {
-				// Empty state: no data
-				if (this.dom.sessPct) {
-					this.dom.sessPct.textContent = '—';
-					this.dom.sessPct.title = '';
-				}
-				if (this.dom.sessReset) {
-					this.dom.sessReset.textContent = 'Updates after your next message';
-					this.dom.sessReset.title = '';
-				}
-				if (this.dom.sessBar) {
-					this.dom.sessBar.style.width = '0%';
-					this.dom.sessBar.style.backgroundColor = lowColor;
-					if (this.dom.sessBar.parentElement) {
-						this.dom.sessBar.parentElement.setAttribute('aria-valuenow', '0');
+				if (!sessHasData) {
+					// Empty state: no data
+					if (this.dom.sessPct) {
+						this.dom.sessPct.textContent = '—';
+						this.dom.sessPct.title = '';
+					}
+					if (this.dom.sessReset) {
+						this.dom.sessReset.textContent = 'Updates after your next message';
+						this.dom.sessReset.title = '';
+					}
+					if (this.dom.sessBar) {
+						this.dom.sessBar.style.width = '0%';
+						this.dom.sessBar.style.backgroundColor = lowColor;
+						if (this.dom.sessBar.parentElement) {
+							this.dom.sessBar.parentElement.setAttribute('aria-valuenow', '0');
+						}
+					}
+					if (this.dom.rowSession) this.dom.rowSession.classList.remove('cc-high-utilization');
+				} else if (sessRolledOver) {
+					// Rolled over: now >= resets_at
+					if (this.dom.sessPct) {
+						this.dom.sessPct.textContent = '—';
+						this.dom.sessPct.title = '';
+					}
+					if (this.dom.sessReset) {
+						this.dom.sessReset.textContent = 'Window reset, send a message to update';
+						this.dom.sessReset.title = '';
+					}
+					if (this.dom.sessBar) {
+						this.dom.sessBar.style.width = '0%';
+						this.dom.sessBar.style.backgroundColor = lowColor;
+						if (this.dom.sessBar.parentElement) {
+							this.dom.sessBar.parentElement.setAttribute('aria-valuenow', '0');
+						}
+					}
+					if (this.dom.rowSession) this.dom.rowSession.classList.remove('cc-high-utilization');
+				} else {
+					// Active session data
+					const used = sess.pctUsed;
+					const left = typeof sess.pctLeft === 'number' ? sess.pctLeft : Math.max(0, 100 - used);
+					const cappedWidth = Math.max(0, Math.min(100, used));
+					const tierColor = getTierColor(used);
+
+					if (this.dom.sessPct) {
+						this.dom.sessPct.textContent = `${used}% used · ${left}% left`;
+						this.dom.sessPct.title = 'Derived: 100% minus used';
+					}
+					if (this.dom.sessReset) {
+						const diffMs = sessResetsAtMs ? sessResetsAtMs - now : 0;
+						this.dom.sessReset.textContent = sessResetsAtMs ? formatSessionCountdown(diffMs) : '';
+						this.dom.sessReset.title = '';
+					}
+					if (this.dom.sessBar) {
+						this.dom.sessBar.style.width = `${cappedWidth}%`;
+						this.dom.sessBar.style.backgroundColor = tierColor;
+						if (this.dom.sessBar.parentElement) {
+							this.dom.sessBar.parentElement.setAttribute('aria-valuenow', String(cappedWidth));
+						}
+					}
+					if (this.dom.rowSession) {
+						this.dom.rowSession.classList.toggle('cc-high-utilization', used >= 90);
 					}
 				}
-				if (this.dom.rowSession) this.dom.rowSession.classList.remove('cc-high-utilization');
-			} else if (sessRolledOver) {
-				// Rolled over: now >= resets_at
-				if (this.dom.sessPct) {
-					this.dom.sessPct.textContent = '—';
-					this.dom.sessPct.title = '';
-				}
-				if (this.dom.sessReset) {
-					this.dom.sessReset.textContent = 'Window reset, send a message to update';
-					this.dom.sessReset.title = '';
-				}
-				if (this.dom.sessBar) {
-					this.dom.sessBar.style.width = '0%';
-					this.dom.sessBar.style.backgroundColor = lowColor;
-					if (this.dom.sessBar.parentElement) {
-						this.dom.sessBar.parentElement.setAttribute('aria-valuenow', '0');
-					}
-				}
-				if (this.dom.rowSession) this.dom.rowSession.classList.remove('cc-high-utilization');
-			} else {
-				// Active session data
-				const used = sess.pctUsed;
-				const left = typeof sess.pctLeft === 'number' ? sess.pctLeft : Math.max(0, 100 - used);
-				const cappedWidth = Math.max(0, Math.min(100, used));
-				const tierColor = getTierColor(used);
 
-				if (this.dom.sessPct) {
-					this.dom.sessPct.textContent = `${used}% used · ${left}% left`;
-					this.dom.sessPct.title = 'Derived: 100% minus used';
-				}
-				if (this.dom.sessReset) {
-					const diffMs = sessResetsAtMs ? sessResetsAtMs - now : 0;
-					this.dom.sessReset.textContent = sessResetsAtMs ? formatSessionCountdown(diffMs) : '';
-					this.dom.sessReset.title = '';
-				}
-				if (this.dom.sessBar) {
-					this.dom.sessBar.style.width = `${cappedWidth}%`;
-					this.dom.sessBar.style.backgroundColor = tierColor;
-					if (this.dom.sessBar.parentElement) {
-						this.dom.sessBar.parentElement.setAttribute('aria-valuenow', String(cappedWidth));
-					}
-				}
-				if (this.dom.rowSession) this.dom.rowSession.classList.toggle('cc-high-utilization', used >= 90);
-			}
+				// Render Weekly (7d)
+				const weekResetsAtMs = week?.resetsAt ? Date.parse(week.resetsAt) : null;
+				const weekHasData = week && typeof week.pctUsed === 'number' && !isNaN(week.pctUsed);
+				const weekRolledOver = weekResetsAtMs && now >= weekResetsAtMs;
 
-			// Render Weekly (7d)
-			const weekResetsAtMs = week?.resetsAt ? Date.parse(week.resetsAt) : null;
-			const weekHasData = week && typeof week.pctUsed === 'number' && !isNaN(week.pctUsed);
-			const weekRolledOver = weekResetsAtMs && now >= weekResetsAtMs;
+				if (!weekHasData) {
+					// Empty state: no data
+					if (this.dom.weekPct) {
+						this.dom.weekPct.textContent = '—';
+						this.dom.weekPct.title = '';
+					}
+					if (this.dom.weekReset) {
+						this.dom.weekReset.textContent = 'Updates after your next message';
+						this.dom.weekReset.title = '';
+					}
+					if (this.dom.weekBar) {
+						this.dom.weekBar.style.width = '0%';
+						this.dom.weekBar.style.backgroundColor = lowColor;
+						if (this.dom.weekBar.parentElement) {
+							this.dom.weekBar.parentElement.setAttribute('aria-valuenow', '0');
+						}
+					}
+					if (this.dom.rowWeekly) this.dom.rowWeekly.classList.remove('cc-high-utilization');
+				} else if (weekRolledOver) {
+					// Rolled over: now >= resets_at
+					if (this.dom.weekPct) {
+						this.dom.weekPct.textContent = '—';
+						this.dom.weekPct.title = '';
+					}
+					if (this.dom.weekReset) {
+						this.dom.weekReset.textContent = 'Window reset, send a message to update';
+						this.dom.weekReset.title = '';
+					}
+					if (this.dom.weekBar) {
+						this.dom.weekBar.style.width = '0%';
+						this.dom.weekBar.style.backgroundColor = lowColor;
+						if (this.dom.weekBar.parentElement) {
+							this.dom.weekBar.parentElement.setAttribute('aria-valuenow', '0');
+						}
+					}
+					if (this.dom.rowWeekly) this.dom.rowWeekly.classList.remove('cc-high-utilization');
+				} else {
+					// Active weekly data
+					const used = week.pctUsed;
+					const left = typeof week.pctLeft === 'number' ? week.pctLeft : Math.max(0, 100 - used);
+					const cappedWidth = Math.max(0, Math.min(100, used));
+					const tierColor = getTierColor(used);
 
-			if (!weekHasData) {
-				// Empty state: no data
-				if (this.dom.weekPct) {
-					this.dom.weekPct.textContent = '—';
-					this.dom.weekPct.title = '';
-				}
-				if (this.dom.weekReset) {
-					this.dom.weekReset.textContent = 'Updates after your next message';
-					this.dom.weekReset.title = '';
-				}
-				if (this.dom.weekBar) {
-					this.dom.weekBar.style.width = '0%';
-					this.dom.weekBar.style.backgroundColor = lowColor;
-					if (this.dom.weekBar.parentElement) {
-						this.dom.weekBar.parentElement.setAttribute('aria-valuenow', '0');
+					if (this.dom.weekPct) {
+						this.dom.weekPct.textContent = `${used}% used · ${left}% left`;
+						this.dom.weekPct.title = 'Derived: 100% minus used';
+					}
+					if (this.dom.weekReset) {
+						const diffMs = weekResetsAtMs ? weekResetsAtMs - now : 0;
+						this.dom.weekReset.textContent = weekResetsAtMs ? formatWeeklyCountdown(diffMs) : '';
+						this.dom.weekReset.title = weekResetsAtMs ? formatWeeklyLocalClock(weekResetsAtMs) : '';
+					}
+					if (this.dom.weekBar) {
+						this.dom.weekBar.style.width = `${cappedWidth}%`;
+						this.dom.weekBar.style.backgroundColor = tierColor;
+						if (this.dom.weekBar.parentElement) {
+							this.dom.weekBar.parentElement.setAttribute('aria-valuenow', String(cappedWidth));
+						}
+					}
+					if (this.dom.rowWeekly) {
+						this.dom.rowWeekly.classList.toggle('cc-high-utilization', used >= 90);
 					}
 				}
-				if (this.dom.rowWeekly) this.dom.rowWeekly.classList.remove('cc-high-utilization');
-			} else if (weekRolledOver) {
-				// Rolled over: now >= resets_at
-				if (this.dom.weekPct) {
-					this.dom.weekPct.textContent = '—';
-					this.dom.weekPct.title = '';
+				this.logPanelRenderState();
+			} catch (err) {
+				if (this.onDebugLog) {
+					this.onDebugLog('render_error', { name: err?.name || 'Error', message: err?.message || 'Render failed' });
 				}
-				if (this.dom.weekReset) {
-					this.dom.weekReset.textContent = 'Window reset, send a message to update';
-					this.dom.weekReset.title = '';
-				}
-				if (this.dom.weekBar) {
-					this.dom.weekBar.style.width = '0%';
-					this.dom.weekBar.style.backgroundColor = lowColor;
-					if (this.dom.weekBar.parentElement) {
-						this.dom.weekBar.parentElement.setAttribute('aria-valuenow', '0');
-					}
-				}
-				if (this.dom.rowWeekly) this.dom.rowWeekly.classList.remove('cc-high-utilization');
-			} else {
-				// Active weekly data
-				const used = week.pctUsed;
-				const left = typeof week.pctLeft === 'number' ? week.pctLeft : Math.max(0, 100 - used);
-				const cappedWidth = Math.max(0, Math.min(100, used));
-				const tierColor = getTierColor(used);
-
-				if (this.dom.weekPct) {
-					this.dom.weekPct.textContent = `${used}% used · ${left}% left`;
-					this.dom.weekPct.title = 'Derived: 100% minus used';
-				}
-				if (this.dom.weekReset) {
-					const diffMs = weekResetsAtMs ? weekResetsAtMs - now : 0;
-					this.dom.weekReset.textContent = weekResetsAtMs ? formatWeeklyCountdown(diffMs) : '';
-					this.dom.weekReset.title = weekResetsAtMs ? formatWeeklyLocalClock(weekResetsAtMs) : '';
-				}
-				if (this.dom.weekBar) {
-					this.dom.weekBar.style.width = `${cappedWidth}%`;
-					this.dom.weekBar.style.backgroundColor = tierColor;
-					if (this.dom.weekBar.parentElement) {
-						this.dom.weekBar.parentElement.setAttribute('aria-valuenow', String(cappedWidth));
-					}
-				}
-				if (this.dom.rowWeekly) this.dom.rowWeekly.classList.toggle('cc-high-utilization', used >= 90);
+				this._renderFallbackRows();
 			}
 		}
 
@@ -1717,27 +1865,33 @@
 
 		renderAll() {
 			if (!this.panel) return;
+			try {
+				if (this.metrics.context.isLoaded && typeof this.metrics.context.tokens === 'number') {
+					this.setConversationMetrics({
+						totalTokens: this.metrics.context.tokens,
+						cachedUntil: this.metrics.cachedUntil,
+						isLoaded: true
+					});
+				} else {
+					this.setConversationLoading();
+				}
 
-			if (this.metrics.context.isLoaded && typeof this.metrics.context.tokens === 'number') {
-				this.setConversationMetrics({
-					totalTokens: this.metrics.context.tokens,
-					cachedUntil: this.metrics.cachedUntil,
-					isLoaded: true
-				});
-			} else {
-				this.setConversationLoading();
+				if (this.currentNormalizedState) {
+					this.setNormalizedUsage(this.currentNormalizedState);
+				} else {
+					this.panel.classList.toggle('cc-state-empty', this.metrics.state === 'empty');
+					this.panel.classList.toggle('cc-state-error', this.metrics.state === 'error');
+				}
+
+				this.setConversationActive(this.metrics.hasConversation);
+				this.setPendingCache(this.metrics.isPendingCache);
+				this.tick();
+			} catch (err) {
+				if (this.onDebugLog) {
+					this.onDebugLog('render_error', { name: err?.name || 'Error', message: err?.message || 'Render failed' });
+				}
+				this._renderFallbackRows();
 			}
-
-			if (this.currentNormalizedState) {
-				this.setNormalizedUsage(this.currentNormalizedState);
-			} else {
-				this.panel.classList.toggle('cc-state-empty', this.metrics.state === 'empty');
-				this.panel.classList.toggle('cc-state-error', this.metrics.state === 'error');
-			}
-
-			this.setConversationActive(this.metrics.hasConversation);
-			this.setPendingCache(this.metrics.isPendingCache);
-			this.tick();
 		}
 
 		tick() {

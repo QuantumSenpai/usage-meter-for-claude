@@ -283,6 +283,9 @@
 			if (ui.shouldFetchConversation && ui.shouldFetchConversation()) {
 				refreshConversation();
 			}
+		},
+		onDebugLog: (category, data) => {
+			logDebug(category, data);
 		}
 	});
 
@@ -648,6 +651,7 @@
 		// Normal document flow: insert directly above the composer card
 		parent.insertBefore(ui.rootElement, card);
 		logDebug('panel_mounted_inline', {});
+		if (ui.logPanelRenderState) ui.logPanelRenderState();
 
 		// Attach observer to closest stable container (parent of card)
 		if (parent !== lastObservedParent) {

@@ -1,4 +1,70 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.0)
+# Testing Checklist: Usage Meter for Claude (v0.6.1)
+
+## Brave Checklist (v0.6.1 Bug Fix Verification)
+
+### 1. Load with Old Settings (0.5.x legacy settings / disabled rows)
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai`.
+- **Steps:**
+  1. Open DevTools Console and simulate legacy 0.5.x settings that had Session and Weekly disabled:
+     ```javascript
+     localStorage.setItem('cc_settings', JSON.stringify({
+       preset: 'default',
+       lowColor: '#10b981',
+       midColor: '#f59e0b',
+       highColor: '#ef4444',
+       accentColor: '#d97706',
+       opacity: 0.94,
+       showSession: false,
+       showWeekly: false,
+       contextWindow: 200000
+     }));
+     ```
+  2. Perform a hard refresh: `Cmd + Shift + R` (macOS) or `Ctrl + Shift + R` (Windows/Linux).
+- **Expected Results:**
+  - Panel is **NOT** an empty dark bar.
+  - Header **Usage Limits** and persistent action buttons (debug icon, gear icon) are clearly visible at the top.
+  - One-time migration `v061_migrated: true` runs automatically and resets `showSession: true` and `showWeekly: true`.
+  - Both **Session (5h)** and **Weekly (7d)** rows are visible with progress bars and reset countdowns.
+  - Inspect console debug log: `panel_render_state` confirms:
+    `{ showSession: true, showWeekly: true, showContext: false, showCache: false, rowsInDom: true, keys: ['cc_settings', ...] }`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. Load with Cleared Settings (Fresh profile state)
+- **Preconditions:** Extension loaded in Brave. Open `https://claude.ai`.
+- **Steps:**
+  1. Open DevTools Console and clear all storage:
+     ```javascript
+     localStorage.clear();
+     ```
+  2. Perform a hard refresh (`Cmd + Shift + R`).
+- **Expected Results:**
+  - Panel is mounted above the composer card.
+  - Header **Usage Limits** and gear icon render immediately.
+  - Both Session (5h) and Weekly (7d) rows render with clean fallback states (`"—"` and `"Updates after your next message"`).
+  - Progress bars are at 0% width with default emerald green color.
+  - Panel is stable, non-empty, and free of render exceptions.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 3. Reset Defaults (Settings Drawer Accessibility)
+- **Preconditions:** Extension mounted and visible on `https://claude.ai`.
+- **Steps:**
+  1. Click the gear icon (`#cc-gear-btn`) in the header bar.
+  2. Verify the Settings Drawer opens smoothly without displacing the composer.
+  3. Change the preset (e.g. select "Sunset" or "Mono"), or uncheck a row checkbox.
+  4. Click the **Reset Defaults** button at the bottom of the drawer.
+- **Expected Results:**
+  - Settings immediately revert to defaults:
+    - Preset: Default (low: `#10b981`, mid: `#f59e0b`, high: `#ef4444`).
+    - Opacity: `94%`.
+    - Rows Visibility: Session (5h) and Weekly (7d) checked; Context and Cache unchecked.
+  - Panel reflects the restored colors immediately.
+  - Header bar and gear button remain permanently accessible.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+---
 
 ## How to Reload & Test in Brave (Chromium MV3)
 

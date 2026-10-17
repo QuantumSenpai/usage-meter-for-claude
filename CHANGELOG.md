@@ -2,6 +2,30 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.1] - 2026-10-17
+
+### Fix Empty Panel Bug & Legacy Settings Migration
+- **Root Cause & Fix for Empty Panel in Brave / Legacy Profiles:**
+  - Resolved issue where profiles with historical `0.5.x` settings or disabled rows rendered an empty dark bar with no Session/Weekly rows, no header, and no accessible gear button.
+  - Added one-time migration (`v061_migrated: true`) in `_loadSavedSettings()` that forces `showSession: true` and `showWeekly: true` visible once while preserving user custom themes, colors, and opacity.
+- **Persistent Header & Guaranteed Gear Button Access:**
+  - Decoupled `#cc-gear-btn` and `#cc-debug-btn` from `#cc-row-session` into a persistent top `.cc-header` element.
+  - Ensures settings drawer and "Reset Defaults" button are always reachable even when both usage rows have no data or are toggled off.
+- **Strict Settings Validation & Range Clamping:**
+  - Added key-by-key type and range validation in settings loader with fallback to defaults per key.
+  - Custom colors validated with hex regex (`^#[0-9a-fA-F]{3,8}$`), falling back to default theme colors.
+  - Opacity strictly clamped to `[0.50, 1.00]` based on UI slider range (`min="50"` to `max="100"`).
+  - Context window integer validated to `[1000, 10000000]` with 200,000 fallback.
+- **Render Path Error Safety:**
+  - Wrapped `renderSessionAndWeekly()` and `renderAll()` in `try / catch` blocks.
+  - On render failure, logs `render_error` with name and message only, and renders fallback rows displaying `" — "` so the panel never collapses into an empty bar.
+- **Diagnostic Telemetry:**
+  - Added `panel_render_state` debug log emitting booleans only (`showSession`, `showWeekly`, `showContext`, `showCache`, `rowsInDom`) and list of `cc_*` localStorage key names (never values).
+- **Automated Tests:**
+  - Added real-code unit tests (Tests 26–34 in `tests/mount.test.js`) verifying migration of historical settings, range clamping, fallback rendering, persistent header/gear access, and `panel_render_state` telemetry.
+
+---
+
 ## [0.6.0] - 2026-10-17
 
 ### Rebuilt Panel for Plan Usage Limits (Session & Weekly), Local Storage Persistence & Cleanup
