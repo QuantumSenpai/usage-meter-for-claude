@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Claude Counter",
-  "version": "0.4.2",
+  "name": "Usage Meter for Claude",
+  "version": "0.5.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "{236c6889-52b6-4454-bc4b-5a2ad18effa2}",
@@ -19,7 +19,7 @@
     "256": "icons/icon256.png"
   },
   "action": {
-    "default_title": "Claude Counter",
+    "default_title": "Usage Meter for Claude",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -31,7 +31,14 @@
   "content_scripts": [
     {
       "matches": ["https://claude.ai/*"],
-      "css": ["src/styles.css"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "js": ["src/injected/bridge.js"]
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
       "js": [
         "src/content/constants.js",
         "src/content/bridge-client.js",

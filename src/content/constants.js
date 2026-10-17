@@ -3,27 +3,57 @@
 
 	const CC = (globalThis.ClaudeCounter = globalThis.ClaudeCounter || {});
 
+	/**
+	 * Centralized DOM Selectors Configuration
+	 *
+	 * Selectors avoid ephemeral or hashed class names (e.g. Tailwind dynamic hashes).
+	 * We prioritize:
+	 * 1. data-testid attributes
+	 * 2. Standard HTML5 elements & ARIA roles
+	 * 3. Semantic structural containers
+	 * 4. Fallback floating container if no inline mount matches within ~3s
+	 */
+	CC.SELECTORS = Object.freeze({
+		// In-page anchor search order for usage bars (near chat input)
+		INPUT_ANCHORS: [
+			// Primary 1: Standard model selector dropdown trigger
+			{ name: 'model-selector-dropdown', selector: '[data-testid="model-selector-dropdown"]' },
+			// Primary 2: Alternative model selector button variants by aria
+			{ name: 'model-selector-aria', selector: 'button[aria-haspopup="menu"][data-testid*="model"], button[aria-label*="model" i]' },
+			// Fallback 1: Chat input controls container (toolbar row)
+			{ name: 'chat-input-controls', selector: '[data-testid="chat-input-controls"], [data-testid="chat-controls"]' },
+			// Fallback 2: The chat input form / fieldset container
+			{ name: 'chat-input-form', selector: 'fieldset:has([contenteditable="true"]), form:has([contenteditable="true"])' },
+			// Fallback 3: Contenteditable wrapper
+			{ name: 'contenteditable-wrapper', selector: '[contenteditable="true"]' }
+		],
+
+		// Top header anchor search order for context tokens + cache pill
+		HEADER_ANCHORS: [
+			// Primary 1: Chat menu dropdown in top bar
+			{ name: 'chat-menu-trigger', selector: '[data-testid="chat-menu-trigger"]' },
+			// Primary 2: Chat title or project selector in header
+			{ name: 'chat-title', selector: '[data-testid="chat-title"], header [aria-haspopup="menu"]' },
+			// Fallback 1: Any top header / banner element
+			{ name: 'header-banner', selector: 'header, [role="banner"]' }
+		],
+
+		// Branch navigation buttons (Previous / Next response)
+		BRANCH_BUTTONS: 'button[aria-label="Previous"], button[aria-label="Next"], button[aria-label*="previous response" i], button[aria-label*="next response" i]'
+	});
+
 	CC.DOM = Object.freeze({
-		CHAT_MENU_TRIGGER: '[data-testid="chat-menu-trigger"]',
-		MODEL_SELECTOR_DROPDOWN: '[data-testid="model-selector-dropdown"]',
-		CHAT_PROJECT_WRAPPER: '.chat-project-wrapper',
-		BRIDGE_SCRIPT_ID: 'cc-bridge-script'
+		BRIDGE_SCRIPT_ID: 'cc-bridge-script',
+		METER_ROOT_ID: 'cc-usage-meter-root',
+		FALLBACK_CONTAINER_ID: 'cc-floating-meter-root'
 	});
 
 	CC.CONST = Object.freeze({
 		CACHE_WINDOW_MS: 5 * 60 * 1000,
-		CONTEXT_LIMIT_TOKENS: 200000
-	});
-
-	CC.COLORS = Object.freeze({
-		PROGRESS_FILL_DARK: '#2c84db',
-		PROGRESS_FILL_LIGHT: '#5aa6ff',
-		PROGRESS_OUTLINE_DARK: '#787877',
-		PROGRESS_OUTLINE_LIGHT: '#bfbfbf',
-		PROGRESS_MARKER_DARK: '#ffffff',
-		PROGRESS_MARKER_LIGHT: '#111111',
-		RED_WARNING: '#ce2029',
-		BOLD_LIGHT: '#141413',
-		BOLD_DARK: '#faf9f5'
+		CONTEXT_LIMIT_TOKENS: 200000,
+		SLOW_USAGE_REFRESH_INTERVAL_MS: 5 * 60 * 1000,
+		FALLBACK_MOUNT_TIMEOUT_MS: 3000,
+		DEBUG_LOG_MAX_ENTRIES: 100,
+		DEBUG_STORAGE_KEY: 'cc_debug'
 	});
 })();

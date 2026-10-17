@@ -36,27 +36,37 @@
 	function countTokens(text) {
 		if (!text) return 0;
 		const tokenizer = getTokenizer();
-		if (!tokenizer?.countTokens) return 0;
+		if (!tokenizer?.countTokens) {
+			// Rough fallback if tokenizer not ready (~4 chars per token)
+			return Math.ceil(text.length / 4);
+		}
 		try {
 			return tokenizer.countTokens(text);
 		} catch {
-			return 0;
+			return Math.ceil(text.length / 4);
 		}
 	}
 
 	function buildTrunk(conversation) {
 		const messages = Array.isArray(conversation?.chat_messages) ? conversation.chat_messages : [];
+		if (messages.length === 0) return [];
+
 		const byId = new Map();
 		for (const msg of messages) {
 			if (msg?.uuid) byId.set(msg.uuid, msg);
 		}
 
 		const leaf = conversation?.current_leaf_message_uuid;
-		if (!leaf) return [];
+		if (!leaf) {
+			// If no leaf specified, sort messages by created_at or take in order
+			return messages.slice().sort((a, b) => (Date.parse(a?.created_at || 0) || 0) - (Date.parse(b?.created_at || 0) || 0));
+		}
 
 		const trunk = [];
 		let currentId = leaf;
-		while (currentId && currentId !== ROOT_MESSAGE_ID) {
+		const visited = new Set();
+		while (currentId && currentId !== ROOT_MESSAGE_ID && !visited.has(currentId)) {
+			visited.add(currentId);
 			const msg = byId.get(currentId);
 			if (!msg) break;
 			trunk.push(msg);
@@ -70,6 +80,7 @@
 	function isCountableContentItem(item) {
 		if (!item || typeof item !== 'object') return false;
 		if (typeof item.type !== 'string') return false;
+		// Do not count internal thinking or media blobs directly
 		if (item.type === 'thinking' || item.type === 'redacted_thinking') return false;
 		if (item.type === 'image' || item.type === 'document') return false;
 		return true;
@@ -78,10 +89,8 @@
 	function stringifyCountableContentItem(item) {
 		if (!isCountableContentItem(item)) return '';
 
-		// Common fast-path for text blocks.
 		if (item.type === 'text' && typeof item.text === 'string') return item.text;
 
-		// Tool blocks: include observable payloads deterministically, but exclude "thinking".
 		if (item.type === 'tool_use') {
 			const minimal = {
 				id: item.id,
@@ -100,7 +109,6 @@
 			return stableStringify(minimal);
 		}
 
-		// Fallback: keep only known-ish textual fields to avoid pulling in huge binary-ish blobs.
 		const minimal = {};
 		if (typeof item.text === 'string') minimal.text = item.text;
 		if (typeof item.title === 'string') minimal.title = item.title;
@@ -114,14 +122,17 @@
 	function stringifyMessageCountables(message) {
 		const parts = [];
 
-		// Message content blocks (primary source for tools, text, etc).
 		const content = Array.isArray(message?.content) ? message.content : [];
 		for (const item of content) {
 			const s = stringifyCountableContentItem(item);
 			if (s) parts.push(s);
 		}
 
-		// Attachment extracted content (observable, already text).
+		// Also check top-level text property if content was a string
+		if (typeof message?.text === 'string' && message.text) {
+			parts.push(message.text);
+		}
+
 		const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
 		for (const a of attachments) {
 			if (typeof a?.extracted_content === 'string' && a.extracted_content) {
@@ -138,7 +149,7 @@
 			const res = await CC.bridge.requestHash(str);
 			if (res?.hash) return res.hash;
 		} catch {
-			// No local hashing fallback.
+			// No local hashing fallback
 		}
 		return null;
 	}
@@ -176,6 +187,11 @@
 
 	const tokenCache = new TokenCache();
 
+	// Micro-yield to keep the main thread responsive during heavy calculations
+	function yieldToMain() {
+		return new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
 	async function computeConversationMetrics(conversation) {
 		const trunk = buildTrunk(conversation);
 		const trunkIds = trunk.map((m) => m.uuid).filter(Boolean);
@@ -184,7 +200,14 @@
 		let totalTokens = 0;
 		let lastAssistantMs = null;
 
-		for (const msg of trunk) {
+		for (let i = 0; i < trunk.length; i++) {
+			const msg = trunk[i];
+
+			// Yield every 10 messages so the UI never stutters
+			if (i > 0 && i % 10 === 0) {
+				await yieldToMain();
+			}
+
 			if (msg?.sender === 'assistant' && msg?.created_at) {
 				const msgMs = Date.parse(msg.created_at);
 				if (!lastAssistantMs || msgMs > lastAssistantMs) {
@@ -196,6 +219,7 @@
 			const msgTokens = msg?.uuid ? await tokenCache.getMessageTokens(msg.uuid, msgText) : countTokens(msgText);
 			totalTokens += msgTokens;
 		}
+
 		const cachedUntil = lastAssistantMs ? lastAssistantMs + CC.CONST.CACHE_WINDOW_MS : null;
 
 		return {
@@ -206,5 +230,5 @@
 		};
 	}
 
-	CC.tokens = { computeConversationMetrics };
+	CC.tokens = { computeConversationMetrics, countTokens };
 })();
