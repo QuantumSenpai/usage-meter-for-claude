@@ -51,9 +51,18 @@
 		METER_ROOT_ID: 'cc-usage-meter-root'
 	});
 
+	/**
+	 * Context window token limit.
+	 * Default: 200,000 tokens (estimated via o200k_base tokenizer).
+	 */
+	const CONTEXT_WINDOW_TOKENS = 200000; // unverified, needs real evidence
+
+	CC.CONTEXT_WINDOW_TOKENS = CONTEXT_WINDOW_TOKENS;
+
 	CC.CONST = Object.freeze({
 		CACHE_WINDOW_MS: 5 * 60 * 1000,
-		CONTEXT_LIMIT_TOKENS: 200000,
+		CONTEXT_WINDOW_TOKENS,
+		CONTEXT_LIMIT_TOKENS: CONTEXT_WINDOW_TOKENS, // backwards-compatible alias
 		SLOW_USAGE_REFRESH_INTERVAL_MS: 5 * 60 * 1000,
 		DEBUG_LOG_MAX_ENTRIES: 100,
 		DEBUG_STORAGE_KEY: 'cc_debug'
@@ -63,7 +72,8 @@
 		module.exports = {
 			SELECTORS: CC.SELECTORS,
 			DOM: CC.DOM,
-			CONST: CC.CONST
+			CONST: CC.CONST,
+			CONTEXT_WINDOW_TOKENS
 		};
 	}
 })();

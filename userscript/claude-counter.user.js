@@ -399,29 +399,39 @@
 		return `~${tokens}`;
 	}
 
-	function formatContextUtilization(tokens, limit = 200000) {
+	const CONTEXT_WINDOW_TOKENS = 200000; // unverified, needs real evidence
+
+	function formatContextUtilization(tokens, limit = CONTEXT_WINDOW_TOKENS) {
+		const limitNum = (typeof limit === 'number' && !isNaN(limit) && limit > 0) ? limit : 200000;
+		const limitStr = limitNum >= 1000 ? `${Math.round(limitNum / 1000)}k` : String(limitNum);
+
 		if (typeof tokens !== 'number' || isNaN(tokens) || tokens < 0) {
 			return {
-				formatted: '— / 200k',
+				formatted: `— / ${limitStr}`,
 				percentText: '—',
 				barPercent: 0,
-				isOverLimit: false
+				isOverLimit: false,
+				isExceeded10Pct: false,
+				tooltip: ''
 			};
 		}
 
 		const formattedTokens = formatTokens(tokens);
-		const formatted = `${formattedTokens} / 200k`;
+		const formatted = `${formattedTokens} est. / ${limitStr}`;
 
-		if (tokens > limit) {
+		if (tokens > limitNum) {
+			const isExceeded10Pct = tokens > (limitNum * 1.1);
 			return {
 				formatted,
-				percentText: '>100%',
+				percentText: 'long chat',
 				barPercent: 100,
-				isOverLimit: true
+				isOverLimit: true,
+				isExceeded10Pct,
+				tooltip: 'Estimated size; limit may differ by model. This is not your plan usage limit.'
 			};
 		}
 
-		const rawPct = (tokens / limit) * 100;
+		const rawPct = (tokens / limitNum) * 100;
 		const barPercent = Math.max(0, Math.min(100, rawPct));
 		const percentText = tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`;
 
@@ -429,7 +439,9 @@
 			formatted,
 			percentText,
 			barPercent,
-			isOverLimit: false
+			isOverLimit: false,
+			isExceeded10Pct: false,
+			tooltip: ''
 		};
 	}
 
@@ -741,14 +753,10 @@
 			}
 
 			const tokens = Math.max(0, Math.round(totalTokens));
+			const limit = CONTEXT_WINDOW_TOKENS;
 			const util = CC.tokens?.formatContextUtilization
-				? CC.tokens.formatContextUtilization(tokens, 200000)
-				: {
-					formatted: tokens > 200000 ? `~${Math.round(tokens / 1000)}k / 200k` : `~${tokens >= 1000 ? Math.round(tokens / 1000) + 'k' : tokens} / 200k`,
-					percentText: tokens > 200000 ? '>100%' : (tokens === 0 ? '0%' : `${((tokens / 200000) * 100).toFixed(1)}%`),
-					barPercent: Math.max(0, Math.min(100, (tokens / 200000) * 100)),
-					isOverLimit: tokens > 200000
-				};
+				? CC.tokens.formatContextUtilization(tokens, limit)
+				: formatContextUtilization(tokens, limit);
 
 			this.metrics.context = {
 				isLoaded: true,
@@ -761,8 +769,12 @@
 			if (this.dom.ctxMain) {
 				this.dom.ctxMain.textContent = util.formatted;
 				this.dom.ctxPct.textContent = util.percentText;
+				this.dom.ctxPct.title = util.tooltip || '';
 				this.dom.ctxBar.style.width = `${util.barPercent}%`;
-				this.dom.ctxBar.style.backgroundColor = util.isOverLimit ? '#ef4444' : 'var(--cc-color-low, #10b981)';
+				this.dom.ctxBar.title = util.tooltip || '';
+				this.dom.ctxBar.style.backgroundColor = util.isExceeded10Pct
+					? '#ef4444'
+					: (util.isOverLimit ? '#f59e0b' : 'var(--cc-color-low, #10b981)');
 			}
 			this.updateSummary();
 			this.tick();

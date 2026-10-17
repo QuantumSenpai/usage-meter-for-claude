@@ -1,3 +1,4 @@
+const fs = require('fs');
 const assert = require('assert');
 const path = require('path');
 
@@ -281,22 +282,23 @@ async function test(name, fn) {
 		assert.strictEqual(ui.isExpanded, true);
 	});
 
-	// Test 7: Over-limit color bug fix (>100% tokens uses warning color, bar width capped at 100%)
-	await test('Over-limit: 231,255 / 200,000 caps bar width at 100% and uses warning color', () => {
-		const util = formatContextUtilization(231255, 200000);
+	// Test 7: Over-limit color rules (orange "long chat" for <= 10% excess, red warning only for >10% excess)
+	await test('Over-limit: 218,000 / 200,000 shows orange midColor (#f59e0b), "long chat", and tooltip', () => {
+		const util = formatContextUtilization(218000, 200000);
 		assert.strictEqual(util.isOverLimit, true);
-		assert.strictEqual(util.percentText, '>100%');
+		assert.strictEqual(util.isExceeded10Pct, false);
+		assert.strictEqual(util.percentText, 'long chat');
 		assert.strictEqual(util.barPercent, 100, 'Bar percentage must be strictly capped at 100%');
-		assert.strictEqual(util.formatted, '~231k / 200k');
+		assert.strictEqual(util.formatted, '~218k est. / 200k');
 
-		// Verify UI state reflects over-limit
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '' },
+			ctxPct: { textContent: '', title: '' },
 			ctxBar: {
 				style: {},
-				parentElement: { setAttribute: () => {} }
+				title: '',
+				parentElement: { setAttribute: () => {}, title: '' }
 			}
 		};
 		const panelClasses = new Set();
@@ -306,6 +308,49 @@ async function test(name, fn) {
 					if (force) panelClasses.add(c);
 					else panelClasses.delete(c);
 				},
+				remove(c) { panelClasses.delete(c); },
+				contains(c) { return panelClasses.has(c); }
+			},
+			style: { setProperty: () => {} }
+		};
+
+		ui.setConversationMetrics({ totalTokens: 218000, isLoaded: true });
+
+		assert.strictEqual(ui.metrics.context.pct, 100);
+		assert.strictEqual(ui.dom.ctxBar.style.width, '100%');
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true, 'Panel must have cc-over-limit class');
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), false, 'Panel must NOT have cc-over-limit-10pct class');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#f59e0b', 'Over-limit <=10% bar must use orange midColor (#f59e0b)');
+		assert.strictEqual(ui.dom.ctxPct.textContent, 'long chat');
+		assert.strictEqual(ui.dom.ctxPct.title, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
+	});
+
+	await test('Over-limit: 231,255 / 200,000 exceeds by >10% and uses red warning color (#ef4444)', () => {
+		const util = formatContextUtilization(231255, 200000);
+		assert.strictEqual(util.isOverLimit, true);
+		assert.strictEqual(util.isExceeded10Pct, true);
+		assert.strictEqual(util.percentText, 'long chat');
+		assert.strictEqual(util.barPercent, 100, 'Bar percentage must be strictly capped at 100%');
+		assert.strictEqual(util.formatted, '~231k est. / 200k');
+
+		const ui = new CounterUI();
+		ui.dom = {
+			ctxMain: { textContent: '' },
+			ctxPct: { textContent: '', title: '' },
+			ctxBar: {
+				style: {},
+				title: '',
+				parentElement: { setAttribute: () => {}, title: '' }
+			}
+		};
+		const panelClasses = new Set();
+		ui.panel = {
+			classList: {
+				toggle(c, force) {
+					if (force) panelClasses.add(c);
+					else panelClasses.delete(c);
+				},
+				remove(c) { panelClasses.delete(c); },
 				contains(c) { return panelClasses.has(c); }
 			},
 			style: { setProperty: () => {} }
@@ -316,23 +361,20 @@ async function test(name, fn) {
 		assert.strictEqual(ui.metrics.context.pct, 100);
 		assert.strictEqual(ui.dom.ctxBar.style.width, '100%');
 		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true, 'Panel must have cc-over-limit class');
-		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#ef4444', 'Over-limit bar must use warning color (#ef4444)');
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), true, 'Panel must have cc-over-limit-10pct class');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#ef4444', 'Over-limit >10% bar must use red warning color (#ef4444)');
 	});
 
-	// Test 8: Normal token usage does not trigger over-limit warning color
-	await test('Normal: 50,000 / 200,000 utilization formats 25% and does not trigger over-limit class', () => {
-		const util = formatContextUtilization(50000, 200000);
-		assert.strictEqual(util.isOverLimit, false);
-		assert.strictEqual(util.percentText, '25.0%');
-		assert.strictEqual(util.barPercent, 25);
-
+	// Test 8: User override for context window limit
+	await test('Override: setting custom context window adjusts threshold and colors', () => {
 		const ui = new CounterUI();
 		ui.dom = {
 			ctxMain: { textContent: '' },
-			ctxPct: { textContent: '' },
+			ctxPct: { textContent: '', title: '' },
 			ctxBar: {
 				style: {},
-				parentElement: { setAttribute: () => {} }
+				title: '',
+				parentElement: { setAttribute: () => {}, title: '' }
 			}
 		};
 		const panelClasses = new Set();
@@ -342,6 +384,55 @@ async function test(name, fn) {
 					if (force) panelClasses.add(c);
 					else panelClasses.delete(c);
 				},
+				remove(c) { panelClasses.delete(c); },
+				contains(c) { return panelClasses.has(c); }
+			},
+			style: { setProperty: () => {} }
+		};
+
+		// Override to 250,000 tokens
+		ui.settings.contextWindow = 250000;
+		ui.setConversationMetrics({ totalTokens: 231255, isLoaded: true });
+
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), false, '231,255 is under 250k override');
+		assert.strictEqual(ui.dom.ctxMain.textContent, '~231k est. / 250k');
+		assert.strictEqual(ui.dom.ctxPct.textContent, '92.5%');
+
+		// Override to 220,000 tokens: 231,255 is over 220,000 but <= 242,000 (within 10%)
+		ui.settings.contextWindow = 220000;
+		ui.setConversationMetrics({ totalTokens: 231255, isLoaded: true });
+
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit'), true);
+		assert.strictEqual(ui.panel.classList.contains('cc-over-limit-10pct'), false, 'Within 10% of override');
+		assert.strictEqual(ui.dom.ctxBar.style.backgroundColor, '#f59e0b', 'Must be orange for <=10% excess of override');
+	});
+
+	// Test 9: Normal token usage does not trigger over-limit warning color
+	await test('Normal: 50,000 / 200,000 utilization formats 25% and does not trigger over-limit class', () => {
+		const util = formatContextUtilization(50000, 200000);
+		assert.strictEqual(util.isOverLimit, false);
+		assert.strictEqual(util.percentText, '25.0%');
+		assert.strictEqual(util.barPercent, 25);
+		assert.strictEqual(util.formatted, '~50k est. / 200k');
+
+		const ui = new CounterUI();
+		ui.dom = {
+			ctxMain: { textContent: '' },
+			ctxPct: { textContent: '', title: '' },
+			ctxBar: {
+				style: {},
+				title: '',
+				parentElement: { setAttribute: () => {}, title: '' }
+			}
+		};
+		const panelClasses = new Set();
+		ui.panel = {
+			classList: {
+				toggle(c, force) {
+					if (force) panelClasses.add(c);
+					else panelClasses.delete(c);
+				},
+				remove(c) { panelClasses.delete(c); },
 				contains(c) { return panelClasses.has(c); }
 			},
 			style: { setProperty: () => {} }
@@ -374,6 +465,36 @@ async function test(name, fn) {
 		// Caching pending
 		ui.setPendingCache(true);
 		assert.strictEqual(ui.dom.cacheText.textContent, 'caching...', 'Must show caching when pending');
+	});
+
+	// Test 11: Context label tooltip and Settings Drawer override input in source & settings defaults
+	await test('UI: Context label has tooltip, drawer has number input, and settings default to 200,000', () => {
+		const uiSrc = fs.readFileSync(path.join(__dirname, '../src/content/ui.js'), 'utf8');
+
+		// Tooltip on Context label
+		assert.ok(
+			uiSrc.includes('title="Size of this chat vs. context window. Not your usage limit.">Context</span>'),
+			'Context label must have specified tooltip'
+		);
+
+		// Number input in drawer
+		assert.ok(
+			uiSrc.includes('id="cc-context-window-input"'),
+			'Settings drawer must include #cc-context-window-input'
+		);
+		assert.ok(
+			uiSrc.includes('type="number"'),
+			'Context window override input must be of type number'
+		);
+
+		// Settings defaults
+		const ui = new CounterUI();
+		assert.strictEqual(ui.settings.contextWindow, 200000, 'Must default contextWindow to 200,000');
+
+		// Reset defaults preserves 200,000
+		ui.settings.contextWindow = 300000;
+		ui.resetDefaults();
+		assert.strictEqual(ui.settings.contextWindow, 200000, 'resetDefaults() must restore 200,000');
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

@@ -2,6 +2,35 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.5.4] - 2026-10-17
+
+### Context Limit Constant, Override Setting & Estimate Labeling
+- **Named Constant for Context Window:**
+  - Defined in one single location: `CONTEXT_WINDOW_TOKENS = 200000; // unverified, needs real evidence` in `src/content/constants.js`.
+  - Exposed as `CC.CONTEXT_WINDOW_TOKENS` and `CC.CONST.CONTEXT_WINDOW_TOKENS`, preserving backwards-compatible alias `CC.CONST.CONTEXT_LIMIT_TOKENS`.
+  - Default context window remains 200,000 tokens.
+- **Context Window Override Setting:**
+  - Added a number input in the gear settings drawer ("Context Window").
+  - Allows users to override the estimated model context window limit (e.g. 250,000 or custom values).
+  - Saved in `localStorage` under `cc_settings.contextWindow` guarded inside `try/catch`.
+  - Re-evaluates and immediately re-renders active conversation metrics on change or reset.
+- **Estimate Count Labeling:**
+  - Explicitly labeled token count as an estimate: `~218k est. / 200k` (instead of `~218k / 200k`).
+  - Loading / placeholder state formats as `— / 200k` (or customized denominator).
+  - Normal utilization ranges display estimate label (e.g. `~50k est. / 200k`, `~0 est. / 200k`).
+- **Over-Limit Visuals & Copy Redesign:**
+  - Stopped showing `>100%` and removed default red styling when context exceeds the limit.
+  - When context is over the limit (`tokens > limit`):
+    - Progress bar width is capped full at 100%.
+    - Bar and percentage text render in **MID/warning orange** color (`var(--cc-color-mid, #f59e0b)`).
+    - Status text displays **"long chat"**.
+    - Hover tooltip on bar and percentage text: `"Estimated size; limit may differ by model. This is not your plan usage limit."`.
+  - **Red warning** (`var(--cc-color-high, #ef4444)`) is used **only if the limit (or user-set override) is exceeded by more than 10%** (`tokens > limit * 1.1`).
+- **Context Label Tooltip:**
+  - Added short explanatory tooltip on the `Context` label: `"Size of this chat vs. context window. Not your usage limit."`.
+
+---
+
 ## [0.5.3] - 2026-10-17
 
 ### Inline Mounting Above Composer Card

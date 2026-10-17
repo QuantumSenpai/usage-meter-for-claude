@@ -1,4 +1,4 @@
-# Testing Checklist: Usage Meter for Claude (v0.5.3)
+# Testing Checklist: Usage Meter for Claude (v0.5.4)
 
 ## How to Reload & Test in Brave (Chromium MV3)
 
@@ -12,7 +12,36 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
 
 ---
 
-## Brave Manual Verification Matrix (v0.5.3)
+## Brave Manual Verification Matrix (v0.5.4)
+
+### 0. Context Window Override, Estimate Label & Over-Limit States (v0.5.4)
+- **Preconditions:** Extension reloaded, open any chat on `https://claude.ai`.
+- **Steps:**
+  1. **Estimate Label:** Observe token count in the summary line.
+     - *Expected:* Displays with estimate format, e.g. `~218k est. / 200k` or `~50k est. / 200k` (never plain `~218k / 200k`).
+  2. **Context Label Tooltip:** Hover the cursor over the "Context" label.
+     - *Expected:* Displays tooltip: `"Size of this chat vs. context window. Not your usage limit."`.
+  3. **Context Window Override Setting:**
+     - Click the gear icon to open the Settings Drawer.
+     - Locate the **"Context Window"** number input (defaults to `200000`).
+     - Change value to `250000`.
+     - *Expected:* Immediately re-renders the context meter with `/ 250k` denominator. Saved to `localStorage.cc_settings` within `try/catch`.
+     - Click "Reset Defaults".
+     - *Expected:* Reverts to `200000` (denominator `/ 200k`).
+  4. **Over-Limit Behavior (<= 10% Excess):**
+     - In a chat with ~205k-219k tokens (or lower the override input so tokens are 1-10% above limit):
+     - *Expected:* Text shows **"long chat"** (never `>100%`).
+     - Progress bar is full (100% width) in **MID/warning orange** color (`#f59e0b`), NOT red.
+     - Hovering over "long chat" or the bar shows tooltip: `"Estimated size; limit may differ by model. This is not your plan usage limit."`.
+  5. **Over-Limit Behavior (> 10% Excess):**
+     - In a chat exceeding the limit by >10% (e.g. 231k tokens with 200k default, or set override below 90% of chat tokens):
+     - *Expected:* Text shows **"long chat"**.
+     - Progress bar is full in **RED warning** color (`#ef4444`).
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+---
 
 ### 1. Inline Mount Directly Above Composer Card
 - **Preconditions:** Extension reloaded, open any chat on `https://claude.ai`.

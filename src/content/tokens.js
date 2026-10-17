@@ -250,29 +250,37 @@
 		return `~${tokens}`;
 	}
 
-	function formatContextUtilization(tokens, limit = (CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000)) {
+	function formatContextUtilization(tokens, limit = (CC.CONST?.CONTEXT_WINDOW_TOKENS || CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000)) {
+		const limitNum = (typeof limit === 'number' && !isNaN(limit) && limit > 0) ? limit : 200000;
+		const limitStr = limitNum >= 1000 ? `${Math.round(limitNum / 1000)}k` : String(limitNum);
+
 		if (typeof tokens !== 'number' || isNaN(tokens) || tokens < 0) {
 			return {
-				formatted: '— / 200k',
+				formatted: `— / ${limitStr}`,
 				percentText: '—',
 				barPercent: 0,
-				isOverLimit: false
+				isOverLimit: false,
+				isExceeded10Pct: false,
+				tooltip: ''
 			};
 		}
 
 		const formattedTokens = formatTokens(tokens);
-		const formatted = `${formattedTokens} / 200k`;
+		const formatted = `${formattedTokens} est. / ${limitStr}`;
 
-		if (tokens > limit) {
+		if (tokens > limitNum) {
+			const isExceeded10Pct = tokens > (limitNum * 1.1);
 			return {
 				formatted,
-				percentText: '>100%',
+				percentText: 'long chat',
 				barPercent: 100,
-				isOverLimit: true
+				isOverLimit: true,
+				isExceeded10Pct,
+				tooltip: 'Estimated size; limit may differ by model. This is not your plan usage limit.'
 			};
 		}
 
-		const rawPct = (tokens / limit) * 100;
+		const rawPct = (tokens / limitNum) * 100;
 		const barPercent = Math.max(0, Math.min(100, rawPct));
 		const percentText = tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`;
 
@@ -280,7 +288,9 @@
 			formatted,
 			percentText,
 			barPercent,
-			isOverLimit: false
+			isOverLimit: false,
+			isExceeded10Pct: false,
+			tooltip: ''
 		};
 	}
 

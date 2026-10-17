@@ -6,7 +6,8 @@ const assert = require('assert');
 const tokenizer = require('../src/vendor/o200k_base.js');
 globalThis.GPTTokenizer_o200k_base = tokenizer;
 
-// 2. Load tokens module
+// 2. Load constants & tokens module
+const { CONTEXT_WINDOW_TOKENS } = require('../src/content/constants.js');
 const {
 	ROOT_MESSAGE_ID,
 	countTokens,
@@ -136,20 +137,32 @@ async function test(name, fn) {
 		assert.strictEqual(zeroMetrics.trunkMessageCount, 0);
 
 		const formatZero = formatContextUtilization(zeroMetrics.totalTokens);
-		assert.strictEqual(formatZero.formatted, '~0 / 200k');
+		assert.strictEqual(formatZero.formatted, '~0 est. / 200k');
 		assert.strictEqual(formatZero.percentText, '0%');
 		assert.strictEqual(formatZero.barPercent, 0);
 		assert.strictEqual(formatZero.isOverLimit, false);
 	});
 
-	// Test 7: Over-200k formatting (real case: 231255)
-	await test('Over-limit: formats 231,255 tokens as ~231k / 200k, >100%, and capped bar at 100%', () => {
+	// Test 7: Over-limit formatting (real cases: ~218k and 231,255)
+	await test('Over-limit: ~218k tokens produces ~218k est. / 200k, "long chat", isExceeded10Pct=false, and tooltip', () => {
+		const chat218k = formatContextUtilization(218000);
+		assert.strictEqual(chat218k.formatted, '~218k est. / 200k');
+		assert.strictEqual(chat218k.percentText, 'long chat');
+		assert.strictEqual(chat218k.barPercent, 100, 'Bar width must be capped at 100%');
+		assert.strictEqual(chat218k.isOverLimit, true);
+		assert.strictEqual(chat218k.isExceeded10Pct, false, '218k is within 10% of 200k (<= 220k)');
+		assert.strictEqual(chat218k.tooltip, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
+	});
+
+	await test('Over-limit: 231,255 tokens produces ~231k est. / 200k, "long chat", isExceeded10Pct=true, and tooltip', () => {
 		const overLimit = formatContextUtilization(231255);
 
-		assert.strictEqual(overLimit.formatted, '~231k / 200k');
-		assert.strictEqual(overLimit.percentText, '>100%');
+		assert.strictEqual(overLimit.formatted, '~231k est. / 200k');
+		assert.strictEqual(overLimit.percentText, 'long chat');
 		assert.strictEqual(overLimit.barPercent, 100, 'Bar width must be capped at 100%');
-		assert.strictEqual(overLimit.isOverLimit, true, 'isOverLimit flag must trigger warning color');
+		assert.strictEqual(overLimit.isOverLimit, true);
+		assert.strictEqual(overLimit.isExceeded10Pct, true, '231,255 exceeds 200k by >10% (> 220k)');
+		assert.strictEqual(overLimit.tooltip, 'Estimated size; limit may differ by model. This is not your plan usage limit.');
 	});
 
 	// Test 8: Consistent compact (k) formatting across scales
@@ -168,18 +181,34 @@ async function test(name, fn) {
 	});
 
 	// Test 9: Context utilization percentage and bar widths for normal ranges
-	await test('Utilization: calculates accurate percentages within 0-200k range', () => {
+	await test('Utilization: calculates accurate percentages within normal range with estimate label', () => {
 		const half = formatContextUtilization(100000);
-		assert.strictEqual(half.formatted, '~100k / 200k');
+		assert.strictEqual(half.formatted, '~100k est. / 200k');
 		assert.strictEqual(half.percentText, '50.0%');
 		assert.strictEqual(half.barPercent, 50);
 		assert.strictEqual(half.isOverLimit, false);
+		assert.strictEqual(half.isExceeded10Pct, false);
 
 		const small = formatContextUtilization(2000);
-		assert.strictEqual(small.formatted, '~2k / 200k');
+		assert.strictEqual(small.formatted, '~2k est. / 200k');
 		assert.strictEqual(small.percentText, '1.0%');
 		assert.strictEqual(small.barPercent, 1);
 		assert.strictEqual(small.isOverLimit, false);
+		assert.strictEqual(small.isExceeded10Pct, false);
+	});
+
+	// Test 10: Custom context window override
+	await test('Override: respects custom limit (e.g. 250,000)', () => {
+		const overridden = formatContextUtilization(231255, 250000);
+		assert.strictEqual(overridden.formatted, '~231k est. / 250k');
+		assert.strictEqual(overridden.isOverLimit, false, '231,255 is under 250,000');
+		assert.strictEqual(overridden.percentText, '92.5%');
+		assert.strictEqual(Math.round(overridden.barPercent), 93);
+	});
+
+	// Test 11: CONTEXT_WINDOW_TOKENS named constant
+	await test('Constant: CONTEXT_WINDOW_TOKENS is defined as 200,000 default', () => {
+		assert.strictEqual(CONTEXT_WINDOW_TOKENS, 200000);
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

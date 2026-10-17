@@ -318,19 +318,25 @@
 			transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1), background-color 300ms ease;
 		}
 
-		/* Over-limit & High utilization warning */
-		.cc-over-limit .cc-bar-fill,
-		.cc-high-utilization .cc-bar-fill {
-			background-color: var(--cc-color-high, #ef4444) !important;
+		/* Over-limit (Orange / Mid warning) */
+		.cc-over-limit .cc-bar-fill {
+			background-color: var(--cc-color-mid, #f59e0b) !important;
 		}
 
 		.cc-over-limit .cc-val-pct {
-			color: var(--cc-color-high, #ef4444) !important;
-			font-weight: 700;
+			color: var(--cc-color-mid, #f59e0b) !important;
+			font-weight: 600;
 		}
 
-		.cc-high-utilization .cc-bar-fill {
+		/* Over-limit > 10% (Red / High warning) */
+		.cc-over-limit-10pct .cc-bar-fill {
+			background-color: var(--cc-color-high, #ef4444) !important;
 			animation: cc-pulse 2s infinite ease-in-out;
+		}
+
+		.cc-over-limit-10pct .cc-val-pct {
+			color: var(--cc-color-high, #ef4444) !important;
+			font-weight: 700;
 		}
 
 		@keyframes cc-pulse {
@@ -491,6 +497,22 @@
 			cursor: pointer;
 		}
 
+		.cc-settings-row input[type="number"] {
+			width: 75px;
+			background: rgba(128, 128, 128, 0.14);
+			border: 1px solid var(--cc-border, rgba(255, 255, 255, 0.08));
+			color: var(--cc-text);
+			border-radius: 4px;
+			padding: 2px 4px;
+			font-size: 9px;
+			font-family: inherit;
+			text-align: right;
+		}
+
+		.cc-settings-row input[type="number"]:focus {
+			outline: 1px solid var(--cc-accent, #d97706);
+		}
+
 		.cc-contrast-alert {
 			display: none;
 			padding: 3px 6px;
@@ -604,12 +626,21 @@
 				accentColor: PRESETS.default.accent,
 				opacity: 0.94,
 				showSession: true,
-				showWeekly: true
+				showWeekly: true,
+				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000
 			};
 			try {
 				const saved = localStorage.getItem('cc_settings');
 				if (saved) {
-					return Object.assign(defaults, JSON.parse(saved));
+					const parsed = JSON.parse(saved);
+					if (parsed && typeof parsed.contextWindow === 'number' && !isNaN(parsed.contextWindow) && parsed.contextWindow > 0) {
+						// valid number
+					} else if (parsed && parsed.contextWindow) {
+						const num = parseInt(parsed.contextWindow, 10);
+						if (!isNaN(num) && num > 0) parsed.contextWindow = num;
+						else delete parsed.contextWindow;
+					}
+					return Object.assign(defaults, parsed);
 				}
 			} catch {
 				// ignore
@@ -645,7 +676,7 @@
 				<!-- Thin summary line (Default View: always visible) -->
 				<div class="cc-summary-line" id="cc-summary-line" title="Click to expand/collapse Usage Meter">
 					<div class="cc-summary-left">
-						<span class="cc-label">Context</span>
+						<span class="cc-label" title="Size of this chat vs. context window. Not your usage limit.">Context</span>
 						<div class="cc-bar-track cc-bar-track--mini" role="progressbar" aria-label="Context utilization" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
 							<div class="cc-bar-fill" id="cc-ctx-bar"></div>
 						</div>
@@ -757,6 +788,12 @@
 							⚠️ Low contrast (&lt; 4.5:1). Colors may be hard to read.
 						</div>
 
+						<div class="cc-settings-title" style="margin-top: 4px;">Context Window Override</div>
+						<div class="cc-settings-row">
+							<span title="Override the estimated context window limit (default: 200000)">Context Window</span>
+							<input type="number" id="cc-context-window-input" min="1000" max="10000000" step="10000" placeholder="200000" />
+						</div>
+
 						<div class="cc-settings-title" style="margin-top: 4px;">Rows Visibility</div>
 						<div class="cc-settings-row">
 							<label><input type="checkbox" id="cc-chk-sess" /> Session 5h</label>
@@ -812,6 +849,7 @@
 			this.dom.colHigh = this.shadowRoot.getElementById('cc-col-high');
 			this.dom.opacitySlider = this.shadowRoot.getElementById('cc-opacity-slider');
 			this.dom.contrastAlert = this.shadowRoot.getElementById('cc-contrast-alert');
+			this.dom.contextWindowInput = this.shadowRoot.getElementById('cc-context-window-input');
 			this.dom.chkSess = this.shadowRoot.getElementById('cc-chk-sess');
 			this.dom.chkWeek = this.shadowRoot.getElementById('cc-chk-week');
 			this.dom.resetDefaultsBtn = this.shadowRoot.getElementById('cc-reset-defaults-btn');
@@ -907,6 +945,30 @@
 				this._saveSettings();
 			});
 
+			// Context Window Override input
+			if (this.dom.contextWindowInput) {
+				const handleContextWindowChange = (val) => {
+					const num = parseInt(val, 10);
+					if (!isNaN(num) && num > 0) {
+						this.settings.contextWindow = num;
+					} else {
+						this.settings.contextWindow = CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+					}
+					this._saveSettings();
+					if (this.lastConversationData) {
+						this.setConversationMetrics(this.lastConversationData);
+					}
+				};
+
+				this.dom.contextWindowInput.addEventListener('change', (e) => {
+					handleContextWindowChange(e.target.value);
+					e.target.value = this.settings.contextWindow;
+				});
+				this.dom.contextWindowInput.addEventListener('input', (e) => {
+					handleContextWindowChange(e.target.value);
+				});
+			}
+
 			// Reset buttons
 			this.dom.resetDefaultsBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
@@ -930,9 +992,13 @@
 				accentColor: PRESETS.default.accent,
 				opacity: 0.94,
 				showSession: true,
-				showWeekly: true
+				showWeekly: true,
+				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000
 			};
 			this._saveSettings();
+			if (this.lastConversationData) {
+				this.setConversationMetrics(this.lastConversationData);
+			}
 		}
 
 		applyThemeAndSettings() {
@@ -967,6 +1033,7 @@
 			if (this.dom.colMid) this.dom.colMid.value = mid;
 			if (this.dom.colHigh) this.dom.colHigh.value = high;
 			if (this.dom.opacitySlider) this.dom.opacitySlider.value = Math.round(opacity * 100);
+			if (this.dom.contextWindowInput) this.dom.contextWindowInput.value = this.settings.contextWindow || (CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000);
 
 			if (this.dom.chkSess) this.dom.chkSess.checked = !!this.settings.showSession;
 			if (this.dom.chkWeek) this.dom.chkWeek.checked = !!this.settings.showWeekly;
@@ -993,15 +1060,19 @@
 				return interpolateColor(this.settings.midColor, this.settings.highColor, (pct - 60) / 40);
 			};
 
-			const limit = CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000;
+			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			const midColor = this.settings.midColor || PRESETS.default.mid || '#f59e0b';
 			const warningColor = this.settings.highColor || PRESETS.default.high || '#ef4444';
 
 			if (this.dom.ctxBar) {
 				if (!this.metrics.context.isLoaded) {
 					this.dom.ctxBar.style.backgroundColor = this.settings.lowColor;
-				} else if (this.metrics.context.tokens > limit) {
-					// Over-limit explicitly uses the warning color
+				} else if (this.metrics.context.tokens > limit * 1.1) {
+					// Red only if user-set override is exceeded by >10%
 					this.dom.ctxBar.style.backgroundColor = warningColor;
+				} else if (this.metrics.context.tokens > limit) {
+					// Over-limit (<= 10% over): Mid/warning (orange) color
+					this.dom.ctxBar.style.backgroundColor = midColor;
 				} else if (typeof this.metrics.context.pct === 'number') {
 					this.dom.ctxBar.style.backgroundColor = getColor(this.metrics.context.pct);
 				}
@@ -1036,20 +1107,28 @@
 		}
 
 		setConversationLoading() {
+			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
+			const limitStr = limit >= 1000 ? `${Math.round(limit / 1000)}k` : String(limit);
 			this.metrics.context = {
 				isLoaded: false,
 				tokens: null,
 				pct: null,
-				formatted: '— / 200k'
+				formatted: `— / ${limitStr}`
 			};
 			this.metrics.cachedUntil = null;
 
 			if (this.dom.ctxMain) {
-				this.dom.ctxMain.textContent = '— / 200k';
+				this.dom.ctxMain.textContent = `— / ${limitStr}`;
 				this.dom.ctxPct.textContent = '—';
+				this.dom.ctxPct.title = '';
 				this.dom.ctxBar.style.width = '0%';
-				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', '0');
+				this.dom.ctxBar.title = '';
+				if (this.dom.ctxBar.parentElement) {
+					this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', '0');
+					this.dom.ctxBar.parentElement.title = '';
+				}
 				this.panel.classList.remove('cc-over-limit');
+				this.panel.classList.remove('cc-over-limit-10pct');
 				this.panel.classList.remove('cc-high-utilization');
 			}
 
@@ -1062,26 +1141,39 @@
 		}
 
 		setConversationMetrics({ totalTokens, cachedUntil, isLoaded = true } = {}) {
+			this.lastConversationData = { totalTokens, cachedUntil, isLoaded };
+
 			if (!isLoaded || typeof totalTokens !== 'number' || isNaN(totalTokens)) {
 				this.setConversationLoading();
 				return;
 			}
 
 			const tokens = Math.max(0, Math.round(totalTokens));
-			const limit = CC.CONST?.CONTEXT_LIMIT_TOKENS || 200000;
+			const limit = this.settings?.contextWindow || CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000;
 			this.metrics.cachedUntil = cachedUntil;
 
 			const util = CC.tokens?.formatContextUtilization
 				? CC.tokens.formatContextUtilization(tokens, limit)
-				: {
-					formatted: tokens > limit ? `~${Math.round(tokens / 1000)}k / 200k` : `~${tokens >= 1000 ? Math.round(tokens / 1000) + 'k' : tokens} / 200k`,
-					percentText: tokens > limit ? '>100%' : (tokens === 0 ? '0%' : `${((tokens / limit) * 100).toFixed(1)}%`),
-					barPercent: Math.max(0, Math.min(100, (tokens / limit) * 100)),
-					isOverLimit: tokens > limit
-				};
+				: (() => {
+					const limitNum = (typeof limit === 'number' && limit > 0) ? limit : 200000;
+					const limitStr = limitNum >= 1000 ? `${Math.round(limitNum / 1000)}k` : String(limitNum);
+					const fTok = CC.tokens?.formatTokens ? CC.tokens.formatTokens(tokens) : (tokens >= 1000 ? `~${Math.round(tokens / 1000)}k` : `~${tokens}`);
+					const isOver = tokens > limitNum;
+					const is10Pct = tokens > (limitNum * 1.1);
+					const rawPct = (tokens / limitNum) * 100;
+					return {
+						formatted: `${fTok} est. / ${limitStr}`,
+						percentText: isOver ? 'long chat' : (tokens === 0 ? '0%' : `${rawPct.toFixed(1)}%`),
+						barPercent: Math.max(0, Math.min(100, rawPct)),
+						isOverLimit: isOver,
+						isExceeded10Pct: is10Pct,
+						tooltip: isOver ? 'Estimated size; limit may differ by model. This is not your plan usage limit.' : ''
+					};
+				})();
 
 			const cappedBarPercent = Math.max(0, Math.min(100, util.barPercent));
-			const isOverLimit = util.isOverLimit || tokens > limit;
+			const isOverLimit = !!util.isOverLimit;
+			const isExceeded10Pct = !!util.isExceeded10Pct || (tokens > limit * 1.1);
 
 			this.metrics.context = {
 				isLoaded: true,
@@ -1093,12 +1185,18 @@
 			if (this.dom.ctxMain) {
 				this.dom.ctxMain.textContent = util.formatted;
 				this.dom.ctxPct.textContent = util.percentText;
+				this.dom.ctxPct.title = util.tooltip || '';
 				// Bar width is strictly capped at 100%
 				this.dom.ctxBar.style.width = `${cappedBarPercent}%`;
-				this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', cappedBarPercent.toFixed(1));
+				this.dom.ctxBar.title = util.tooltip || '';
+				if (this.dom.ctxBar.parentElement) {
+					this.dom.ctxBar.parentElement.setAttribute('aria-valuenow', cappedBarPercent.toFixed(1));
+					this.dom.ctxBar.parentElement.title = util.tooltip || '';
+				}
 
 				this.panel.classList.toggle('cc-over-limit', isOverLimit);
-				this.panel.classList.toggle('cc-high-utilization', isOverLimit || cappedBarPercent >= 90);
+				this.panel.classList.toggle('cc-over-limit-10pct', isExceeded10Pct);
+				this.panel.classList.toggle('cc-high-utilization', isExceeded10Pct);
 			}
 
 			this.refreshBarColors();
