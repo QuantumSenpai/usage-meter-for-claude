@@ -92,10 +92,110 @@
 		});
 	}
 
+	let testDebugMode = null;
+
+	function isDebugActive() {
+		try {
+			const storage = (typeof window !== 'undefined' && window.localStorage)
+				? window.localStorage
+				: (typeof localStorage !== 'undefined' ? localStorage : null);
+			if (storage && typeof storage.getItem === 'function') {
+				const val = storage.getItem('cc_debug');
+				if (val !== null) return val === 'true';
+			}
+		} catch {
+			// ignore
+		}
+		if (typeof globalThis !== 'undefined' && typeof globalThis.__CC_DEBUG === 'boolean') {
+			return globalThis.__CC_DEBUG;
+		}
+		return Boolean(testDebugMode);
+	}
+
+	function postDiag(category, data) {
+		try {
+			if (!isDebugActive()) return;
+			post('cc:diag', { category, data });
+		} catch {
+			// ignore
+		}
+	}
+
+	function isSseResponse(response) {
+		try {
+			const ct = (typeof response?.headers?.get === 'function'
+				? response.headers.get('content-type')
+				: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
+			return typeof ct === 'string' && ct.toLowerCase().includes('text/event-stream');
+		} catch {
+			return false;
+		}
+	}
+
+	function parseUrlDetails(rawUrl) {
+		try {
+			const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+				? window.location.origin
+				: 'https://claude.ai';
+			const parsed = new URL(rawUrl, baseOrigin);
+			const isSameOrigin = (typeof window !== 'undefined' && window.location?.origin)
+				? parsed.origin === window.location.origin
+				: parsed.origin === 'https://claude.ai';
+			return {
+				isSameOrigin,
+				pathname: parsed.pathname || ''
+			};
+		} catch {
+			return { isSameOrigin: false, pathname: '' };
+		}
+	}
+
+	function computePathShape(input) {
+		try {
+			let urlStr = '';
+			if (typeof input === 'string') {
+				urlStr = input.trim();
+			} else if (input instanceof URL) {
+				urlStr = input.href;
+			} else if (typeof Request !== 'undefined' && input instanceof Request) {
+				urlStr = input.url;
+			}
+			if (!urlStr) return '';
+
+			if (urlStr.startsWith('blob:')) return 'blob:';
+			if (urlStr.startsWith('data:')) return 'data:';
+
+			const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+				? window.location.origin
+				: 'https://claude.ai';
+			const parsed = new URL(urlStr, baseOrigin);
+			const pathname = parsed.pathname || '';
+
+			const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+			const HEX_16_RE = /^[0-9a-f]{16,}$/i;
+			const DIGITS_RE = /^\d+$/;
+
+			const parts = pathname.split('/').map((seg) => {
+				if (!seg) return seg;
+				if (UUID_RE.test(seg) || HEX_16_RE.test(seg) || DIGITS_RE.test(seg)) {
+					return ':id';
+				}
+				return seg;
+			});
+
+			return parts.join('/');
+		} catch {
+			return '';
+		}
+	}
+
 	// 2. Wrap Fetch
-	const originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
-	if (originalFetch && typeof window !== 'undefined') {
-		window.fetch = async (...args) => {
+	function wrapFetch(targetWindow = (typeof window !== 'undefined' ? window : null)) {
+		if (!targetWindow || !targetWindow.fetch) return;
+		if (targetWindow.__cc_fetch_wrapped__) return;
+		const originalFetch = targetWindow.fetch.bind(targetWindow);
+
+		targetWindow.fetch = async (...args) => {
 			let url = '';
 			let method = 'GET';
 
@@ -130,9 +230,26 @@
 
 			// Non-blocking response inspection
 			try {
-				const contentType = response.headers.get('content-type') || '';
+				let matchedBy = null;
+				const isSse = isSseResponse(response);
 
-				if (contentType.includes('event-stream')) {
+				if (url && (url.includes('/completion') || url.includes('/retry_completion')) && isSse) {
+					matchedBy = 'url';
+				} else {
+					const { isSameOrigin, pathname } = parseUrlDetails(url);
+					if (isSameOrigin && pathname.startsWith('/api/') && isSse) {
+						matchedBy = 'content-type';
+					}
+				}
+
+				if (matchedBy) {
+					const pathShape = computePathShape(url);
+					postDiag('sse_stream_seen', {
+						method,
+						status: response.status,
+						pathShape,
+						matchedBy
+					});
 					handleEventStream(response);
 				} else if (url && response.ok) {
 					// Check conversation payload
@@ -156,6 +273,55 @@
 
 			return response;
 		};
+
+		targetWindow.__cc_fetch_wrapped__ = true;
+	}
+
+	if (typeof window !== 'undefined') {
+		wrapFetch(window);
+	}
+
+	// 2.5 Wrap Transport Constructors (EventSource, WebSocket, Worker, SharedWorker)
+	function wrapTransportConstructor(kind, targetWindow = (typeof window !== 'undefined' ? window : null)) {
+		try {
+			if (!targetWindow || typeof targetWindow[kind] === 'undefined') return;
+			const Original = targetWindow[kind];
+			if (typeof Original !== 'function' || Original.__cc_wrapped__) return;
+
+			const proxy = new Proxy(Original, {
+				construct(target, args, newTarget) {
+					const instance = Reflect.construct(target, args, newTarget);
+					try {
+						const rawUrl = args[0];
+						const pathShape = computePathShape(rawUrl);
+						postDiag('transport_created', { kind, pathShape });
+					} catch {
+						// Swallow logging errors to ensure construction never breaks
+					}
+					return instance;
+				}
+			});
+
+			try {
+				proxy.__cc_wrapped__ = true;
+			} catch {
+				// ignore if non-extensible
+			}
+
+			targetWindow[kind] = proxy;
+		} catch {
+			// ignore proxy setup failure
+		}
+	}
+
+	function initTransportProxies(targetWindow = (typeof window !== 'undefined' ? window : null)) {
+		['EventSource', 'WebSocket', 'Worker', 'SharedWorker'].forEach((kind) => {
+			wrapTransportConstructor(kind, targetWindow);
+		});
+	}
+
+	if (typeof window !== 'undefined') {
+		initTransportProxies(window);
 	}
 
 	// 3. Wrap XHR for completeness
@@ -401,6 +567,14 @@
 	}
 
 	if (typeof module !== 'undefined' && module.exports) {
-		module.exports = { handleEventStream };
+		module.exports = {
+			handleEventStream,
+			isSseResponse,
+			computePathShape,
+			wrapTransportConstructor,
+			initTransportProxies,
+			wrapFetch,
+			setDebugModeForTesting: (val) => { testDebugMode = val; }
+		};
 	}
 })();

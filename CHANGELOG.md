@@ -2,6 +2,19 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.3] - 2026-10-17
+
+### URL-Independent SSE Interception & Redacted Diagnostics
+- **Path-Independent Stream Interception:**
+  - Added `isSseResponse(response)` to detect `content-type: text/event-stream`.
+  - Intercepts SSE streams when matching legacy completion URLs OR for any same-origin response with pathname starting with `/api/` and `text/event-stream`.
+  - Guarantees the page receives the original response untouched, reading only from an independent clone.
+- **Redacted Diagnostics (Debug Only):**
+  - Added `sse_stream_seen { method, status, pathShape, matchedBy: 'url'|'content-type' }` emitted on stream interception.
+  - Added non-invasive constructor proxy wrappers for `EventSource`, `WebSocket`, `Worker`, and `SharedWorker` emitting `transport_created { kind, pathShape }`.
+  - Safe `pathShape` redaction: preserves pathname only (no host, no query), replacing UUIDs, 16+ hex strings, and digits with `:id`, and logging only the scheme for `blob:` and `data:`.
+  - Relayed via `cc:diag` to the content script debug ring buffer when debug mode is enabled; zero overhead when debug is off.
+
 ## [0.6.2] - 2026-10-17
 
 ### Fix Session and Weekly Row Visibility in Empty and Error States

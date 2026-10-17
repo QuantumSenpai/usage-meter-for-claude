@@ -515,6 +515,12 @@
 		}, 1000);
 	});
 
+	CC.bridge.on('cc:diag', (diag = {}) => {
+		if (isCcDebugActive() && diag && typeof diag.category === 'string') {
+			logDebug(diag.category, diag.data || {});
+		}
+	});
+
 	CC.bridge.on('cc:message_limit_raw', (rawEvent) => {
 		if (isCcDebugActive() && CC.normalize?.redactMessageLimitShape) {
 			logDebug('message_limit_event_shape', CC.normalize.redactMessageLimitShape(rawEvent));

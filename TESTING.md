@@ -1,4 +1,20 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.2)
+# Testing Checklist: Usage Meter for Claude (v0.6.3)
+
+## Brave Checklist (v0.6.3 Stream Interception & Transport Diagnostics)
+
+### 1. Intercept Message Stream at Unknown /api/ Path
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. Enable debug logging in panel settings drawer.
+  2. Send a message in any conversation.
+  3. Click the copy-debug button in the settings drawer.
+- **Expected Results:**
+  - Usage panel updates percentage and countdown as soon as `message_limit` event arrives.
+  - Copied debug log contains `sse_stream_seen` with `{ method, status: 200, pathShape, matchedBy }`.
+  - If WebSockets or Workers were opened by the page, copied log contains `transport_created` entries with redacted `pathShape`.
+  - No secret tokens, cookies, org IDs, or chat text appear in the debug log.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave Checklist (v0.6.2 Empty & Error State Row Visibility Verification)
 

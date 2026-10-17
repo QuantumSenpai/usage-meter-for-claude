@@ -1848,7 +1848,296 @@ async function test(name, fn) {
 		assert.strictEqual(ui.panel.classList.contains('cc-state-error'), false, 'Panel must not have cc-state-error');
 	});
 
+	// =========================================================================
+	// Version 0.6.3 Tests: Stream Interception & Transport Diagnostics
+	// =========================================================================
+
+	function createMockSseResponse(sseText, contentType = 'text/event-stream; charset=utf-8', status = 200) {
+		const encoder = new TextEncoder();
+		const bodyStream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(sseText));
+				controller.close();
+			}
+		});
+		return {
+			status,
+			ok: status >= 200 && status < 300,
+			headers: {
+				get(name) {
+					if (name.toLowerCase() === 'content-type') return contentType;
+					return null;
+				}
+			},
+			clone() {
+				const cloneStream = new ReadableStream({
+					start(controller) {
+						controller.enqueue(encoder.encode(sseText));
+						controller.close();
+					}
+				});
+				return { body: cloneStream };
+			},
+			body: bodyStream
+		};
+	}
+
+	function setupBridgeTestEnvironment() {
+		const postedMessages = [];
+		if (!global.window) global.window = {};
+		global.window.location = {
+			origin: 'https://claude.ai',
+			pathname: '/chat'
+		};
+		global.window.postMessage = (msg) => {
+			postedMessages.push(msg);
+		};
+		if (!global.window.addEventListener) {
+			global.window.addEventListener = () => {};
+		}
+		global.window.__cc_fetch_wrapped__ = false;
+		global.window.localStorage = global.localStorage;
+		return { fakeWindow: global.window, postedMessages };
+	}
+
+	// Test 38: 5(a) - SSE response at an unknown path /api/organizations/<uuid>/foo/bar forwards cc:message_limit
+	await test('5(a): SSE response at unknown path /api/organizations/<uuid>/foo/bar forwards cc:message_limit', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const ssePayload = 'event: message_limit\ndata: {"type":"message_limit","message_limit":{"windows":{"5h":{"utilization":0.4}}}}\n\n';
+		const expectedResponse = createMockSseResponse(ssePayload);
+
+		fakeWindow.fetch = async () => expectedResponse;
+		assert.strictEqual(typeof bridge.wrapFetch, 'function', 'wrapFetch must be exported by bridge.js');
+		bridge.wrapFetch(fakeWindow);
+
+		const res = await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/foo/bar', {
+			method: 'POST'
+		});
+		assert.strictEqual(res, expectedResponse, 'Page must receive the original response untouched');
+
+		await new Promise(r => setTimeout(r, 50));
+
+		const limitMsg = postedMessages.find(m => m.type === 'cc:message_limit');
+		assert.ok(limitMsg, 'SSE response at unknown /api/ path must forward cc:message_limit');
+		assert.strictEqual(limitMsg.payload?.windows?.['5h']?.utilization, 0.4);
+
+		const diagMsg = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
+		assert.ok(diagMsg, 'sse_stream_seen must be posted when debug is on');
+		assert.strictEqual(diagMsg.payload.data.matchedBy, 'content-type');
+		assert.strictEqual(diagMsg.payload.data.pathShape, '/api/organizations/:id/foo/bar');
+		assert.strictEqual(diagMsg.payload.data.method, 'POST');
+		assert.strictEqual(diagMsg.payload.data.status, 200);
+	});
+
+	// Test 39: 5(b) - JSON response at /api/... is not intercepted
+	await test('5(b): JSON response at /api/... is not intercepted as SSE', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const jsonResponse = {
+			status: 200,
+			ok: true,
+			headers: { get: (h) => (h.toLowerCase() === 'content-type' ? 'application/json' : null) },
+			clone: () => { throw new Error('Must not clone non-intercepted response'); },
+			json: async () => ({ foo: 'bar' })
+		};
+
+		fakeWindow.fetch = async () => jsonResponse;
+		if (bridge.wrapFetch) bridge.wrapFetch(fakeWindow);
+
+		const res = await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/telemetry', {
+			method: 'POST'
+		});
+		assert.strictEqual(res, jsonResponse);
+
+		await new Promise(r => setTimeout(r, 20));
+		const sseDiag = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
+		assert.strictEqual(sseDiag, undefined, 'Must not emit sse_stream_seen for JSON responses');
+		const streamEnd = postedMessages.find(m => m.type === 'cc:stream_completed');
+		assert.strictEqual(streamEnd, undefined, 'Must not stream-complete non-SSE responses');
+	});
+
+	// Test 40: 5(c) - SSE at a non-/api/ path is not intercepted
+	await test('5(c): SSE at a non-/api/ path is not intercepted', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const sseResponse = createMockSseResponse('data: {"type":"message_limit"}\n\n');
+
+		fakeWindow.fetch = async () => sseResponse;
+		if (bridge.wrapFetch) bridge.wrapFetch(fakeWindow);
+
+		const res = await fakeWindow.fetch('https://claude.ai/telemetry/stream', {
+			method: 'POST'
+		});
+		assert.strictEqual(res, sseResponse);
+
+		await new Promise(r => setTimeout(r, 20));
+		const sseDiag = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
+		assert.strictEqual(sseDiag, undefined, 'Must not intercept non-/api/ SSE stream');
+		const limitMsg = postedMessages.find(m => m.type === 'cc:message_limit');
+		assert.strictEqual(limitMsg, undefined, 'Must not forward limit from non-/api/ stream');
+	});
+
+	// Test 41: 5(d) - Existing completion URL still works
+	await test('5(d): existing completion URL still works and is matchedBy url', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const ssePayload = 'event: message_limit\ndata: {"type":"message_limit","message_limit":{"windows":{"5h":{"utilization":0.05}}}}\n\n';
+		const expectedResponse = createMockSseResponse(ssePayload);
+
+		fakeWindow.fetch = async () => expectedResponse;
+		if (bridge.wrapFetch) bridge.wrapFetch(fakeWindow);
+
+		const url = 'https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/chat_conversations/22222222-2222-2222-2222-222222222222/completion';
+		const res = await fakeWindow.fetch(url, { method: 'POST' });
+		assert.strictEqual(res, expectedResponse);
+
+		await new Promise(r => setTimeout(r, 50));
+
+		const startMsg = postedMessages.find(m => m.type === 'cc:generation_start');
+		assert.ok(startMsg, 'Must post cc:generation_start for completion URL');
+
+		const limitMsg = postedMessages.find(m => m.type === 'cc:message_limit');
+		assert.ok(limitMsg, 'Must forward cc:message_limit');
+		assert.strictEqual(limitMsg.payload?.windows?.['5h']?.utilization, 0.05);
+
+		const diagMsg = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
+		assert.ok(diagMsg, 'sse_stream_seen must be posted');
+		assert.strictEqual(diagMsg.payload.data.matchedBy, 'url', 'Legacy completion URL must be matchedBy url');
+		assert.strictEqual(diagMsg.payload.data.pathShape, '/api/organizations/:id/chat_conversations/:id/completion');
+	});
+
+	// Test 42: 5(e) - pathShape redaction cases (uuid, hex, digits, query stripped, blob:)
+	await test('5(e): pathShape redaction cases (uuid, hex, digits, query stripped, blob:)', () => {
+		const { computePathShape } = require('../src/injected/bridge.js');
+
+		// 1. UUID replaced with :id
+		assert.strictEqual(
+			computePathShape('https://claude.ai/api/organizations/123e4567-e89b-12d3-a456-426614174000/chat_conversations/987e6543-e89b-12d3-a456-426614174000/messages'),
+			'/api/organizations/:id/chat_conversations/:id/messages'
+		);
+
+		// 2. Hex strings of 16+ chars replaced with :id
+		assert.strictEqual(
+			computePathShape('https://claude.ai/api/files/0123456789abcdef0123456789abcdef/view'),
+			'/api/files/:id/view'
+		);
+
+		// 3. All-digit segments replaced with :id
+		assert.strictEqual(
+			computePathShape('/api/v1/projects/987654321/items/42'),
+			'/api/v1/projects/:id/items/:id'
+		);
+
+		// 4. Query string and host stripped (pathname only)
+		assert.strictEqual(
+			computePathShape('https://claude.ai/api/query?secret=token&foo=bar#section'),
+			'/api/query'
+		);
+
+		// 5. blob: URLs log only scheme
+		assert.strictEqual(
+			computePathShape('blob:https://claude.ai/123e4567-e89b-12d3-a456-426614174000'),
+			'blob:'
+		);
+
+		// 6. data: URLs log only scheme
+		assert.strictEqual(
+			computePathShape('data:application/javascript;base64,YWxlcnQoMSk='),
+			'data:'
+		);
+	});
+
+	// Test 43: 5(f) - Proxy wrappers return real instance, pass args, and throwing logger does not break construction
+	await test('5(f): Proxy wrappers return real instance with identical args; throwing logger never breaks construction', () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		const kinds = ['EventSource', 'WebSocket', 'Worker', 'SharedWorker'];
+		for (const kind of kinds) {
+			class OriginalMock {
+				constructor(...args) {
+					this.kind = kind;
+					this.receivedArgs = args;
+					this.isOriginalInstance = true;
+				}
+			}
+			fakeWindow[kind] = OriginalMock;
+			bridge.wrapTransportConstructor(kind, fakeWindow);
+
+			// Test construction with args
+			const testUrl = 'https://claude.ai/api/ws/12345';
+			const testOpt = { protocol: 'v1' };
+			const inst = new fakeWindow[kind](testUrl, testOpt);
+
+			assert.ok(inst.isOriginalInstance, `${kind} must return real instance`);
+			assert.strictEqual(inst instanceof OriginalMock, true, `${kind} must be instance of original`);
+			assert.deepStrictEqual(inst.receivedArgs, [testUrl, testOpt], `${kind} must pass through identical args`);
+
+			const diag = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'transport_created' && m.payload?.data?.kind === kind);
+			assert.ok(diag, `Must emit transport_created for ${kind}`);
+			assert.strictEqual(diag.payload.data.pathShape, '/api/ws/:id');
+
+			// Test throwing logger resilience: arg that throws when read
+			const badArg = {
+				get [Symbol.toPrimitive]() {
+					throw new Error('Exploding logger');
+				}
+			};
+			const safeInst = new fakeWindow[kind](badArg);
+			assert.ok(safeInst.isOriginalInstance, `${kind} must construct successfully even if logger throws`);
+		}
+	});
+
+	// Test 44: 5(g) - Debug off: no diag messages posted
+	await test('5(g): debug off: no diag messages posted and zero extra logging', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'false');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		fakeWindow.fetch = async () => createMockSseResponse('data: {"type":"message_limit"}\n\n');
+		if (bridge.wrapFetch) bridge.wrapFetch(fakeWindow);
+
+		class MockWs {
+			constructor(...args) { this.args = args; }
+		}
+		fakeWindow.WebSocket = MockWs;
+		if (bridge.wrapTransportConstructor) bridge.wrapTransportConstructor('WebSocket', fakeWindow);
+
+		// Execute fetch and constructor
+		await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/foo/bar', { method: 'POST' });
+		new fakeWindow.WebSocket('wss://claude.ai/api/ws/999');
+
+		await new Promise(r => setTimeout(r, 20));
+
+		const diagMessages = postedMessages.filter(m => m.type === 'cc:diag');
+		assert.strictEqual(diagMessages.length, 0, 'No cc:diag messages must be posted when cc_debug is off');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();
+
 
