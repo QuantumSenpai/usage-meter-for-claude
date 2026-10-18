@@ -459,6 +459,7 @@
 
 				frameAscii = frameAscii.replace(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g, '[UUID]');
 				frameAscii = frameAscii.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]+/g, '[EMAIL]');
+				frameAscii = frameAscii.replace(/@/g, '(at)');
 
 				if (frameAscii.length > 512) {
 					frameAscii = frameAscii.slice(0, 512);

@@ -1,4 +1,28 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.11)
+# Testing Checklist: Usage Meter for Claude (v0.6.12)
+
+## Brave & Chrome Checklist (v0.6.12 Diagnostic Lone @ Replacement in Frame ASCII)
+
+### 1. Proto Frame ASCII Lone @ Replacement & Pipeline Verification
+- **Preconditions:** Extension loaded in Brave or Chrome. Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. Enable debug mode in DevTools Console:
+     ```javascript
+     localStorage.setItem('cc_debug', 'true');
+     ```
+  2. Reload the page (`Cmd + Shift + R`).
+  3. Send a message in a conversation.
+  4. Click the debug clipboard icon in the panel header next to the gear.
+  5. Paste into an editor and inspect copied diagnostics.
+- **Expected Results:**
+  - `proto_token_seen` entries log with `needle` instead of `token`. The token string (e.g. `five_hour`, `remaining`, `within_limit`) survives intact and is NOT redacted as `[REDACTED_SECRET]`.
+  - For uncompressed Connect envelope frames with `length <= 512` that contain a target token, `proto_frame_text` is emitted with `{ pathShape, frameIndex, length, head8hex, frameAscii }`.
+  - In `proto_frame_text`, `head8hex` is the first 8 payload bytes as lowercase hex.
+  - In `proto_frame_text`, `frameAscii` has non-printable bytes replaced with `.`, UUIDs masked with `[UUID]`, emails masked with `[EMAIL]`, and any remaining `@` bytes replaced with `(at)`. It is capped at 512 characters.
+  - `frameAscii` survives in `main.js` debug log entries without being completely wiped to `[REDACTED_EMAIL]`.
+  - At most 5 `proto_frame_text` entries are emitted per page load.
+  - The live conversation message stream completes normally and renders in the chat UI.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave & Chrome Checklist (v0.6.11 Diagnostic Needle Unredaction & Frame ASCII Inspection)
 

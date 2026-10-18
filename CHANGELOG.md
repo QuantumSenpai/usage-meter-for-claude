@@ -2,6 +2,16 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.12] - 2026-10-18
+
+### Connect Frame ASCII Lone @ Replacement & Pipeline Verification
+- **Lone `@` Replacement in Connect Frame ASCII (`proto_frame_text`):**
+  - In `src/injected/bridge.js`, replaces all remaining `@` characters in `frameAscii` with `(at)` after masking UUIDs and emails and before capping/posting.
+  - Prevents `src/content/main.js` `sanitizeDebugData` rule (`value.includes('@') && value.includes('.')`) from wiping the entire `frameAscii` string to `[REDACTED_EMAIL]` when an uncompressed Connect-RPC frame contains a lone 0x40 byte alongside dots from non-printable byte replacements.
+  - Leaves `main.js` redaction rules completely unchanged.
+  - Real email addresses remain masked as `[EMAIL]`, UUIDs remain masked as `[UUID]`, and `head8hex` survives unchanged.
+  - Verified through the real bridge code and real `main.js` pipeline that `needle` survives intact in `proto_token_seen` and `frameAscii` with lone 0x40 bytes survives intact in `proto_frame_text`, backed by behavioral negative proofs.
+
 ## [0.6.11] - 2026-10-18
 
 ### Diagnostic Token Unredaction & Connect Frame ASCII Inspection

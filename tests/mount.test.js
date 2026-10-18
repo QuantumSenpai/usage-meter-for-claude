@@ -4655,6 +4655,306 @@ async function test(name, fn) {
 		assert.strictEqual(r2.done, true);
 	});
 
+	// Test 87: 0.6.12 Task 1 - proto_frame_text with frameAscii "abc@def.ghi" sent through real main.js cc:diag is redacted as [REDACTED_EMAIL]
+	await test('0.6.12 Task 1: proto_frame_text with frameAscii "abc@def.ghi" sent through real main.js cc:diag is redacted as [REDACTED_EMAIL]', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+
+		bridgeListeners['cc:diag']({
+			category: 'proto_frame_text',
+			data: {
+				pathShape: '/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline',
+				frameIndex: 0,
+				length: 11,
+				head8hex: '616263406465662e',
+				frameAscii: 'abc@def.ghi'
+			}
+		});
+
+		const entry = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(entry, 'proto_frame_text must be logged in real main.js debug buffer');
+		console.log('Task 1 proof raw entry.data:', JSON.stringify(entry.data));
+		assert.strictEqual(entry.data.frameAscii, '[REDACTED_EMAIL]', 'frameAscii containing @ and . must be redacted to [REDACTED_EMAIL]');
+	});
+
+	// Test 88: 0.6.12 Task 2 - (a) uncompressed frame with token and lone 0x40 byte => frameAscii survives with (at) and not [REDACTED_EMAIL]; (d) head8hex survives
+	await test('0.6.12 Task 2: (a) uncompressed frame with token and lone 0x40 byte => frameAscii survives with (at) and not [REDACTED_EMAIL]; (d) head8hex survives', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+		fakeWindow.postMessage = (msg) => {
+			if (msg && msg.cc === 'ClaudeCounter' && bridgeListeners[msg.type]) {
+				bridgeListeners[msg.type](msg.payload);
+			}
+		};
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// 50-byte payload:
+		// First 8 bytes: 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 => head8hex = '0102030405060708'
+		// Remaining bytes contain token "within_limit" and a lone 0x40 byte ('@')
+		const payload = new Uint8Array(50);
+		payload.fill(0x00); // 0x00 turns into '.' in frameAscii
+		payload.set([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], 0);
+		payload.set(new TextEncoder().encode('within_limit'), 10);
+		payload[30] = 0x40; // lone '@'
+
+		const header = new Uint8Array([0, 0, 0, 0, 50]); // flags=0 (uncompressed), length=50
+		const frame = new Uint8Array(55);
+		frame.set(header, 0);
+		frame.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: frame };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const entry = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(entry, 'proto_frame_text must be logged in real main.js debug buffer');
+		assert.strictEqual(entry.data.head8hex, '0102030405060708', '(d) head8hex must survive unchanged');
+		assert.notStrictEqual(entry.data.frameAscii, '[REDACTED_EMAIL]', '(a) frameAscii must not be wiped as [REDACTED_EMAIL]');
+		assert.ok(entry.data.frameAscii.includes('(at)'), '(a) frameAscii must contain (at)');
+		assert.strictEqual(entry.data.frameAscii.includes('@'), false, '(a) frameAscii must not contain raw @');
+		assert.ok(entry.data.frameAscii.includes('within_limit'), 'frameAscii must contain the token');
+	});
+
+	// Test 89: 0.6.12 Task 2 - (b) frame with a real email => still masked as [EMAIL] through real bridge and real main.js
+	await test('0.6.12 Task 2: (b) frame with a real email => still masked as [EMAIL] through real bridge and real main.js', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+		fakeWindow.postMessage = (msg) => {
+			if (msg && msg.cc === 'ClaudeCounter' && bridgeListeners[msg.type]) {
+				bridgeListeners[msg.type](msg.payload);
+			}
+		};
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Frame with token and real email
+		const text = 'token:five_hour;owner:alice@example.com;status:active';
+		const payload = new TextEncoder().encode(text);
+		const header = new Uint8Array([0, 0, 0, 0, payload.length]);
+		const frame = new Uint8Array(5 + payload.length);
+		frame.set(header, 0);
+		frame.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: frame };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const entry = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(entry, 'proto_frame_text must be logged in real main.js debug buffer');
+		assert.ok(entry.data.frameAscii.includes('[EMAIL]'), '(b) real email must be masked as [EMAIL]');
+		assert.strictEqual(entry.data.frameAscii.includes('alice@example.com'), false, '(b) raw email must not be present');
+		assert.notStrictEqual(entry.data.frameAscii, '[REDACTED_EMAIL]', '(b) frameAscii must not be completely wiped to [REDACTED_EMAIL]');
+	});
+
+	// Test 90: 0.6.12 Task 2 - (c) frame with a UUID => still [UUID] through real bridge and real main.js
+	await test('0.6.12 Task 2: (c) frame with a UUID => still [UUID] through real bridge and real main.js', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+		fakeWindow.postMessage = (msg) => {
+			if (msg && msg.cc === 'ClaudeCounter' && bridgeListeners[msg.type]) {
+				bridgeListeners[msg.type](msg.payload);
+			}
+		};
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Frame with token and UUID
+		const text = 'token:five_hour;uuid:12345678-1234-4234-8234-123456789abc;status:ok';
+		const payload = new TextEncoder().encode(text);
+		const header = new Uint8Array([0, 0, 0, 0, payload.length]);
+		const frame = new Uint8Array(5 + payload.length);
+		frame.set(header, 0);
+		frame.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: frame };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const entry = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(entry, 'proto_frame_text must be logged in real main.js debug buffer');
+		assert.ok(entry.data.frameAscii.includes('[UUID]'), '(c) UUID must be masked as [UUID]');
+		assert.strictEqual(entry.data.frameAscii.includes('12345678-1234-4234-8234-123456789abc'), false, '(c) raw UUID must not be present');
+		assert.notStrictEqual(entry.data.frameAscii, '[REDACTED_UUID]', '(c) frameAscii must not be completely wiped to [REDACTED_UUID]');
+	});
+
+	// Test 91: 0.6.12 Task 2 - REAL bridge emits field name "needle" (not "token") in proto_token_seen and survives through real main.js pipeline
+	await test('0.6.12 Task 2: REAL bridge emits "needle" (not "token") in proto_token_seen and survives through real main.js pipeline', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+		fakeWindow.postMessage = (msg) => {
+			if (msg && msg.cc === 'ClaudeCounter' && bridgeListeners[msg.type]) {
+				bridgeListeners[msg.type](msg.payload);
+			}
+		};
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		const tokenBytes = new TextEncoder().encode('five_hour');
+		const frame = new Uint8Array(5 + tokenBytes.length);
+		frame[0] = 0; frame[1] = 0; frame[2] = 0; frame[3] = 0; frame[4] = tokenBytes.length;
+		frame.set(tokenBytes, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: frame };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const entry = buffer.find(e => e.category === 'proto_token_seen');
+		assert.ok(entry, 'proto_token_seen must be logged in real main.js debug buffer');
+		assert.strictEqual(entry.data.needle, 'five_hour', 'field "needle" must survive with token value "five_hour"');
+		assert.strictEqual(entry.data.token, undefined, 'field "token" must NOT be emitted by bridge');
+		assert.notStrictEqual(entry.data.needle, '[REDACTED_SECRET]', 'needle must not be redacted');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();
