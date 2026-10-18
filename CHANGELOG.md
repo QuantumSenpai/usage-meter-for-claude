@@ -2,6 +2,17 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.13] - 2026-10-18
+
+### Diagnostic Connect Frame Hex Inspection
+- **Raw Hex Payload Field for Connect Envelope Frames (`proto_frame_text.frameHex`):**
+  - Added `frameHex` to `proto_frame_text` diagnostic in `src/injected/bridge.js`: encodes the full frame payload as lowercase hex with no separators.
+  - Emitted strictly when `payload.length <= 256` bytes AND the payload contains at least one of four limit strings: `five_hour`, `seven_day`, `within_limit`, `utilization`.
+  - For frames longer than 256 bytes or containing none of the four strings, `frameHex` is omitted.
+  - Preserves the existing cap of 5 `proto_frame_text` entries per page load, uncompressed flags requirement, and all existing masking rules.
+  - Leaves `src/content/main.js` redaction rules completely unchanged.
+  - Verified through real bridge code and real `main.js` pipeline with behavioral negative proof.
+
 ## [0.6.12] - 2026-10-18
 
 ### Connect Frame ASCII Lone @ Replacement & Pipeline Verification

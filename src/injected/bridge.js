@@ -465,13 +465,23 @@
 					frameAscii = frameAscii.slice(0, 512);
 				}
 
-				postDiag('proto_frame_text', {
+				const diagData = {
 					pathShape,
 					frameIndex,
 					length,
 					head8hex,
 					frameAscii
-				});
+				};
+
+				if (payload.length <= 256 && (latin1.includes('five_hour') || latin1.includes('seven_day') || latin1.includes('within_limit') || latin1.includes('utilization'))) {
+					let frameHex = '';
+					for (let j = 0; j < payload.length; j++) {
+						frameHex += payload[j].toString(16).padStart(2, '0');
+					}
+					diagData.frameHex = frameHex;
+				}
+
+				postDiag('proto_frame_text', diagData);
 			}
 
 			function processChunkForFrames(chunk) {

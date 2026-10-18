@@ -1,4 +1,27 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.12)
+# Testing Checklist: Usage Meter for Claude (v0.6.13)
+
+## Brave & Chrome Checklist (v0.6.13 Diagnostic Frame Hex Inspection)
+
+### 1. Proto Frame Hex Diagnostic Verification
+- **Preconditions:** Extension loaded in Brave or Chrome. Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. Enable debug mode in DevTools Console:
+     ```javascript
+     localStorage.setItem('cc_debug', 'true');
+     ```
+  2. Reload the page (`Cmd + Shift + R`).
+  3. Send a message in a conversation.
+  4. Click the debug clipboard icon in the panel header next to the gear.
+  5. Paste into an editor and inspect copied diagnostics.
+- **Expected Results:**
+  - For uncompressed Connect envelope frames with `length <= 256` that contain at least one of `five_hour`, `seven_day`, `within_limit`, `utilization`, `proto_frame_text` includes field `frameHex`.
+  - `frameHex` is the entire payload encoded as lowercase hex without separators.
+  - For frames longer than 256 bytes or lacking any of the four strings, `frameHex` is omitted.
+  - `proto_frame_text` continues to include `head8hex` and masked `frameAscii`.
+  - At most 5 `proto_frame_text` entries are emitted per page load.
+  - The live conversation message stream completes normally and renders in the chat UI.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave & Chrome Checklist (v0.6.12 Diagnostic Lone @ Replacement in Frame ASCII)
 
