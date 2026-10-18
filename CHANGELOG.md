@@ -2,6 +2,22 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.6] - 2026-10-18
+
+### Context & Cache Rows Default Off and Request Diagnostics
+- **Row Defaults Reversed to OFF:**
+  - In `src/content/ui.js`, `showContext` and `showCache` are now `false` by default on fresh installations and unconfigured profiles.
+  - Session and Weekly rows remain `true` (ON) by default.
+  - Settings toggles in the Rows Visibility drawer remain fully functional so users can turn Context/Cache on by hand.
+  - Removed the one-time `v062_migrated` logic that forced rows ON. No migration modifies values the user already saved.
+  - Kept harmless `row_visibility_changed` logging and deduplicated `panel_render_state` telemetry from 0.6.5.
+- **Request Diagnostics & Robust Request Object Handling (Debug Mode Only):**
+  - Added `request_seen` diagnostic telemetry emitted for EVERY fetch and XHR seen by the bridge when `cc_debug` is enabled.
+  - Fields logged: `method`, `host`, `pathShape` (IDs replaced by `:id`, query strings stripped), `status`, `content-type`, and `inputType` (`'string' | 'url' | 'request' | 'other'`).
+  - Strict privacy: never logs bodies, headers (other than content-type), cookies, or query strings.
+  - Ring buffer capacity increased to 200 entries per page load (`DEBUG_LOG_MAX_ENTRIES: 200`).
+  - Added duck-typed Request handling (`(rawInput && typeof rawInput === 'object' && typeof rawInput.url === 'string')`) across `toAbsoluteUrl`, `getHost`, `computePathShape`, and `wrapFetch`, ensuring cross-realm or polyfilled Request inputs are resolved properly.
+
 ## [0.6.5] - 2026-10-18
 
 ### Fix Context and Cache Row Visibility & Telemetry Noise

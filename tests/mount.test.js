@@ -1119,14 +1119,12 @@ async function test(name, fn) {
 		assert.strictEqual(ui.settings.showWeekly, true, 'Must preserve showWeekly');
 
 		assert.strictEqual(ui.settings.v060_migrated, true, 'Must set v060_migrated=true');
-		assert.strictEqual(ui.settings.v062_migrated, true, 'Must set v062_migrated=true');
-		assert.strictEqual(ui.settings.showContext, true, 'Must keep showContext true');
-		assert.strictEqual(ui.settings.showCache, true, 'Must keep showCache true');
+		assert.strictEqual(ui.settings.showContext, true, 'Must preserve user showContext true');
+		assert.strictEqual(ui.settings.showCache, true, 'Must preserve user showCache true');
 
 		// Check persisted in storage
 		const saved = JSON.parse(storage.getItem('cc_settings'));
 		assert.strictEqual(saved.v060_migrated, true);
-		assert.strictEqual(saved.v062_migrated, true);
 		assert.strictEqual(saved.showContext, true);
 		assert.strictEqual(saved.showCache, true);
 		assert.strictEqual(saved.lowColor, '#123456');
@@ -1134,21 +1132,20 @@ async function test(name, fn) {
 
 	// Test 25: No conversation fetch is issued while Context and Cache are hidden; resumes when enabled
 	await test('No conversation fetch is issued while Context and Cache are hidden; resumes when turned back on', async () => {
+		global.localStorage = createMockStorage();
 		const { main } = setupRealMainEnvironment();
 		const { _internal } = main;
 		const ui = _internal.getUi();
 
-		// Default in v0.6.5: Context & Cache are visible
-		assert.strictEqual(ui.settings.showContext, true);
-		assert.strictEqual(ui.settings.showCache, true);
-		assert.strictEqual(ui.shouldFetchConversation(), true);
+		// Default in v0.6.6: Context & Cache are OFF by default
+		assert.strictEqual(ui.settings.showContext, false);
+		assert.strictEqual(ui.settings.showCache, false);
+		assert.strictEqual(ui.shouldFetchConversation(), false);
 
 		// Let initial async mount load settle
 		await new Promise(r => setTimeout(r, 20));
 
-		// User explicitly hides Context & Cache
-		ui.settings.showContext = false;
-		ui.settings.showCache = false;
+		// Verified initial state: Context & Cache are false
 		assert.strictEqual(ui.shouldFetchConversation(), false);
 
 		let fetchCalls = 0;
@@ -2446,8 +2443,8 @@ async function test(name, fn) {
 	// Version 0.6.5 Tests: Row Visibility, Migration, and Telemetry Noise Fixes
 	// =========================================================================
 
-	// Test 47: Exact cc_settings JSON from user evidence ends with both rows visible after v062 migration
-	await test('0.6.5 Test 47: exact evidence cc_settings JSON ends with Context and Cache rows visible after migration', () => {
+	// Test 47: Exact cc_settings JSON from user evidence preserves user saved Context and Cache rows as false (no migration overrides them)
+	await test('0.6.6 Test 47: exact evidence cc_settings JSON preserves Context and Cache rows as false without migration', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
@@ -2459,12 +2456,11 @@ async function test(name, fn) {
 		const ui = new CounterUI();
 		ui.initialize();
 
-		// Real code verification
-		assert.strictEqual(ui.settings.showContext, true, 'showContext must be restored to true');
-		assert.strictEqual(ui.settings.showCache, true, 'showCache must be restored to true');
+		// Real code verification: preserved as false without any migration forcing them to true
+		assert.strictEqual(ui.settings.showContext, false, 'showContext must remain false as user saved');
+		assert.strictEqual(ui.settings.showCache, false, 'showCache must remain false as user saved');
 		assert.strictEqual(ui.settings.showSession, true, 'showSession must remain true');
 		assert.strictEqual(ui.settings.showWeekly, true, 'showWeekly must remain true');
-		assert.strictEqual(ui.settings.v062_migrated, true, 'v062_migrated must be true');
 
 		// DOM row visibility
 		const rowContext = ui.shadowRoot.getElementById('cc-row-context');
@@ -2474,8 +2470,8 @@ async function test(name, fn) {
 
 		assert.ok(rowContext, 'Context row must exist in DOM');
 		assert.ok(rowCache, 'Cache row must exist in DOM');
-		assert.strictEqual(rowContext.classList.contains('cc-hidden'), false, 'Context row must NOT be hidden');
-		assert.strictEqual(rowCache.classList.contains('cc-hidden'), false, 'Cache row must NOT be hidden');
+		assert.strictEqual(rowContext.classList.contains('cc-hidden'), true, 'Context row must be hidden');
+		assert.strictEqual(rowCache.classList.contains('cc-hidden'), true, 'Cache row must be hidden');
 		assert.strictEqual(rowSession.classList.contains('cc-hidden'), false, 'Session row must NOT be hidden');
 		assert.strictEqual(rowWeekly.classList.contains('cc-hidden'), false, 'Weekly row must NOT be hidden');
 
@@ -2484,18 +2480,12 @@ async function test(name, fn) {
 		const chkCache = ui.shadowRoot.getElementById('cc-chk-cache');
 		assert.ok(chkCtx, 'Context checkbox must exist in drawer');
 		assert.ok(chkCache, 'Cache checkbox must exist in drawer');
-		assert.strictEqual(chkCtx.checked, true, 'Context checkbox must be checked');
-		assert.strictEqual(chkCache.checked, true, 'Cache checkbox must be checked');
-
-		// Check persisted in storage
-		const saved = JSON.parse(storage.getItem('cc_settings'));
-		assert.strictEqual(saved.showContext, true, 'Persisted showContext must be true');
-		assert.strictEqual(saved.showCache, true, 'Persisted showCache must be true');
-		assert.strictEqual(saved.v062_migrated, true, 'Persisted v062_migrated must be true');
+		assert.strictEqual(chkCtx.checked, false, 'Context checkbox must be unchecked');
+		assert.strictEqual(chkCache.checked, false, 'Cache checkbox must be unchecked');
 	});
 
-	// Test 48: Fresh profile with no cc_settings saved defaults all rows to visible in settings and DOM
-	await test('0.6.5 Test 48: fresh profile with no saved settings displays all rows by default', () => {
+	// Test 48: Fresh profile with no cc_settings saved defaults Context and Cache to false (off by default)
+	await test('0.6.6 Test 48: fresh profile defaults showContext: false and showCache: false while Session and Weekly are true', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
@@ -2507,65 +2497,67 @@ async function test(name, fn) {
 
 		assert.strictEqual(ui.settings.showSession, true, 'Fresh profile must have showSession true');
 		assert.strictEqual(ui.settings.showWeekly, true, 'Fresh profile must have showWeekly true');
-		assert.strictEqual(ui.settings.showContext, true, 'Fresh profile must have showContext true');
-		assert.strictEqual(ui.settings.showCache, true, 'Fresh profile must have showCache true');
-		assert.strictEqual(ui.settings.v062_migrated, true, 'Fresh profile must have v062_migrated true');
+		assert.strictEqual(ui.settings.showContext, false, 'Fresh profile must have showContext false');
+		assert.strictEqual(ui.settings.showCache, false, 'Fresh profile must have showCache false');
 
 		const rowContext = ui.shadowRoot.getElementById('cc-row-context');
 		const rowCache = ui.shadowRoot.getElementById('cc-row-cache');
-		assert.strictEqual(rowContext.classList.contains('cc-hidden'), false, 'Context row must be visible on fresh profile');
-		assert.strictEqual(rowCache.classList.contains('cc-hidden'), false, 'Cache row must be visible on fresh profile');
+		const rowSession = ui.shadowRoot.getElementById('cc-row-session');
+		const rowWeekly = ui.shadowRoot.getElementById('cc-row-weekly');
+		assert.strictEqual(rowContext.classList.contains('cc-hidden'), true, 'Context row must be hidden on fresh profile');
+		assert.strictEqual(rowCache.classList.contains('cc-hidden'), true, 'Cache row must be hidden on fresh profile');
+		assert.strictEqual(rowSession.classList.contains('cc-hidden'), false, 'Session row must be visible on fresh profile');
+		assert.strictEqual(rowWeekly.classList.contains('cc-hidden'), false, 'Weekly row must be visible on fresh profile');
 
 		const chkCtx = ui.shadowRoot.getElementById('cc-chk-ctx');
 		const chkCache = ui.shadowRoot.getElementById('cc-chk-cache');
-		assert.strictEqual(chkCtx.checked, true);
-		assert.strictEqual(chkCache.checked, true);
+		assert.strictEqual(chkCtx.checked, false, 'Context checkbox must be unchecked by default');
+		assert.strictEqual(chkCache.checked, false, 'Cache checkbox must be unchecked by default');
 	});
 
-	// Test 49: A user who unchecks Context after migration keeps it hidden after reload
-	await test('0.6.5 Test 49: a user who unchecks Context after migration keeps it hidden after reload', () => {
+	// Test 49: A user who turns Context on by hand keeps it visible after reload
+	await test('0.6.6 Test 49: a user who turns Context on by hand keeps it visible after reload', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
 
-		// Initial load: fresh profile / migration runs
+		// Initial load: fresh profile (defaults to false)
 		const ui1 = new CounterUI();
 		ui1.initialize();
-		assert.strictEqual(ui1.settings.showContext, true);
+		assert.strictEqual(ui1.settings.showContext, false);
+		assert.strictEqual(ui1.settings.showCache, false);
 
-		// User unchecks Context row in the drawer
+		// User checks Context row in the drawer
 		const chkCtx = ui1.shadowRoot.getElementById('cc-chk-ctx');
-		chkCtx.checked = false;
+		chkCtx.checked = true;
 		// Dispatch real change event to trigger event listener
 		chkCtx.dispatchEvent('change', { target: chkCtx });
 
-		assert.strictEqual(ui1.settings.showContext, false, 'showContext must now be false');
+		assert.strictEqual(ui1.settings.showContext, true, 'showContext must now be true');
 		const rowContext1 = ui1.shadowRoot.getElementById('cc-row-context');
-		assert.strictEqual(rowContext1.classList.contains('cc-hidden'), true, 'Context row must now be hidden');
+		assert.strictEqual(rowContext1.classList.contains('cc-hidden'), false, 'Context row must now be visible');
 
 		// Check saved in storage
 		const saved = JSON.parse(storage.getItem('cc_settings'));
-		assert.strictEqual(saved.showContext, false, 'Saved settings must store showContext: false');
-		assert.strictEqual(saved.v062_migrated, true, 'Saved settings must have v062_migrated: true');
+		assert.strictEqual(saved.showContext, true, 'Saved settings must store showContext: true');
 
 		// Reload (new CounterUI instance reading from same localStorage)
 		const ui2 = new CounterUI();
 		ui2.initialize();
 
-		assert.strictEqual(ui2.settings.showContext, false, 'Reload must keep showContext false');
-		assert.strictEqual(ui2.settings.showCache, true, 'showCache must remain true');
+		assert.strictEqual(ui2.settings.showContext, true, 'Reload must keep showContext true');
+		assert.strictEqual(ui2.settings.showCache, false, 'showCache must remain false');
 		const rowContext2 = ui2.shadowRoot.getElementById('cc-row-context');
-		assert.strictEqual(rowContext2.classList.contains('cc-hidden'), true, 'Context row must remain hidden after reload');
+		assert.strictEqual(rowContext2.classList.contains('cc-hidden'), false, 'Context row must remain visible after reload');
 		const chkCtx2 = ui2.shadowRoot.getElementById('cc-chk-ctx');
-		assert.strictEqual(chkCtx2.checked, false, 'Context checkbox must remain unchecked');
+		assert.strictEqual(chkCtx2.checked, true, 'Context checkbox must remain checked');
 	});
 
-	// Test 50: Migration runs once and does not overwrite user choices on subsequent reloads
-	await test('0.6.5 Test 50: v062 migration runs once and does not revert intentional user row hiding', () => {
+	// Test 50: User-saved settings are never altered or forced by any migration
+	await test('0.6.6 Test 50: user-saved settings are never altered or forced by any migration', () => {
 		const storage = createMockStorage();
 		global.localStorage = storage;
 
-		// Profile that was already migrated by v062 where user chose to hide both Context and Cache
 		storage.setItem('cc_settings', JSON.stringify({
 			preset: 'default',
 			lowColor: '#10b981',
@@ -2575,21 +2567,18 @@ async function test(name, fn) {
 			opacity: 0.94,
 			showSession: true,
 			showWeekly: true,
-			showContext: false,
+			showContext: true,
 			showCache: false,
-			v060_migrated: true,
-			v061_migrated: true,
-			v062_migrated: true,
 			contextWindow: 200000
 		}));
 
 		const ui = new CounterUI();
-		assert.strictEqual(ui.settings.showContext, false, 'Must NOT revert user choice when v062_migrated is already true');
-		assert.strictEqual(ui.settings.showCache, false, 'Must NOT revert user choice when v062_migrated is already true');
+		assert.strictEqual(ui.settings.showContext, true, 'Must preserve user saved showContext: true');
+		assert.strictEqual(ui.settings.showCache, false, 'Must preserve user saved showCache: false');
 	});
 
 	// Test 51: No runtime path (countdown ticks, metrics, usage normalization, expanded toggle) changes flags
-	await test('0.6.5 Test 51: no runtime path changes the visibility flags', () => {
+	await test('0.6.6 Test 51: no runtime path changes the visibility flags', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
@@ -2597,16 +2586,16 @@ async function test(name, fn) {
 		const ui = new CounterUI();
 		ui.initialize();
 
-		assert.strictEqual(ui.settings.showContext, true);
-		assert.strictEqual(ui.settings.showCache, true);
+		assert.strictEqual(ui.settings.showContext, false);
+		assert.strictEqual(ui.settings.showCache, false);
 
 		// 1. Tick countdowns repeatedly
 		for (let i = 0; i < 5; i++) {
 			ui.renderSessionAndWeekly();
 			ui.tick();
 		}
-		assert.strictEqual(ui.settings.showContext, true, 'Tick must not change showContext');
-		assert.strictEqual(ui.settings.showCache, true, 'Tick must not change showCache');
+		assert.strictEqual(ui.settings.showContext, false, 'Tick must not change showContext');
+		assert.strictEqual(ui.settings.showCache, false, 'Tick must not change showCache');
 
 		// 2. Normalize usage updates
 		ui.setNormalizedUsage({
@@ -2614,27 +2603,27 @@ async function test(name, fn) {
 			session: { pctUsed: 50, resetsAt: new Date(Date.now() + 3600000).toISOString() },
 			weekly: { pctUsed: 25, resetsAt: new Date(Date.now() + 86400000).toISOString() }
 		});
-		assert.strictEqual(ui.settings.showContext, true, 'Usage update must not change showContext');
-		assert.strictEqual(ui.settings.showCache, true, 'Usage update must not change showCache');
+		assert.strictEqual(ui.settings.showContext, false, 'Usage update must not change showContext');
+		assert.strictEqual(ui.settings.showCache, false, 'Usage update must not change showCache');
 
 		// 3. Conversation metrics updates
 		ui.setConversationMetrics({ totalTokens: 45000, isLoaded: true });
-		assert.strictEqual(ui.settings.showContext, true, 'Conversation metrics must not change showContext');
-		assert.strictEqual(ui.settings.showCache, true, 'Conversation metrics must not change showCache');
+		assert.strictEqual(ui.settings.showContext, false, 'Conversation metrics must not change showContext');
+		assert.strictEqual(ui.settings.showCache, false, 'Conversation metrics must not change showCache');
 
 		// 4. Expand / collapse toggling
 		ui._saveExpanded(!ui.isExpanded);
-		assert.strictEqual(ui.settings.showContext, true, 'Expand toggle must not change showContext');
-		assert.strictEqual(ui.settings.showCache, true, 'Expand toggle must not change showCache');
+		assert.strictEqual(ui.settings.showContext, false, 'Expand toggle must not change showContext');
+		assert.strictEqual(ui.settings.showCache, false, 'Expand toggle must not change showCache');
 
 		// 5. Panel render state logging
 		ui.logPanelRenderState();
-		assert.strictEqual(ui.settings.showContext, true, 'logPanelRenderState must not change showContext');
-		assert.strictEqual(ui.settings.showCache, true, 'logPanelRenderState must not change showCache');
+		assert.strictEqual(ui.settings.showContext, false, 'logPanelRenderState must not change showContext');
+		assert.strictEqual(ui.settings.showCache, false, 'logPanelRenderState must not change showCache');
 	});
 
 	// Test 52: panel_render_state logs only when its values change
-	await test('0.6.5 Test 52: panel_render_state logs only on value change, eliminating ring buffer noise', () => {
+	await test('0.6.6 Test 52: panel_render_state logs only on value change, eliminating ring buffer noise', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
@@ -2658,13 +2647,13 @@ async function test(name, fn) {
 		const repeatedCount = logs.filter(l => l.cat === 'panel_render_state').length;
 		assert.strictEqual(repeatedCount, 1, 'Unchanged state across 10 ticks must NOT log duplicate panel_render_state');
 
-		// Now change a setting: toggle showContext
-		ui.settings.showContext = false;
+		// Now change a setting: toggle showContext to true
+		ui.settings.showContext = true;
 		ui.renderSessionAndWeekly();
 		const changedCount = logs.filter(l => l.cat === 'panel_render_state').length;
 		assert.strictEqual(changedCount, 2, 'Value change must emit a new panel_render_state log');
 		const latestLog = logs.filter(l => l.cat === 'panel_render_state')[1];
-		assert.strictEqual(latestLog.data.showContext, false, 'New log must reflect updated showContext: false');
+		assert.strictEqual(latestLog.data.showContext, true, 'New log must reflect updated showContext: true');
 
 		// Subsequent ticks with the new state should again produce no noise
 		for (let i = 0; i < 5; i++) {
@@ -2675,7 +2664,7 @@ async function test(name, fn) {
 	});
 
 	// Test 53: Row visibility changes emit debug log with caller label
-	await test('0.6.5 Test 53: row visibility changes emit debug log with caller label', () => {
+	await test('0.6.6 Test 53: row visibility changes emit debug log with caller label', () => {
 		setupDOMForRealCounterUI();
 		const storage = createMockStorage();
 		global.localStorage = storage;
@@ -2686,13 +2675,14 @@ async function test(name, fn) {
 		});
 		ui.initialize();
 
+		// Toggle Context from false to true in drawer
 		const chkCtx = ui.shadowRoot.getElementById('cc-chk-ctx');
-		chkCtx.checked = false;
+		chkCtx.checked = true;
 		chkCtx.dispatchEvent('change', { target: chkCtx });
 
 		const rowLogs = logs.filter(l => l.cat === 'row_visibility_changed');
 		assert.ok(rowLogs.length >= 1, 'Must emit row_visibility_changed debug log');
-		const lastCtxLog = rowLogs.find(l => l.data.row === 'context' && l.data.visible === false);
+		const lastCtxLog = rowLogs.find(l => l.data.row === 'context' && l.data.visible === true);
 		assert.ok(lastCtxLog, 'Must log context row visibility change');
 		assert.strictEqual(lastCtxLog.data.caller, 'chk_ctx', 'Caller label must identify chk_ctx');
 
@@ -2700,6 +2690,187 @@ async function test(name, fn) {
 		ui.resetDefaults();
 		const resetLogs = logs.filter(l => l.cat === 'row_visibility_changed' && l.data.caller === 'reset_defaults');
 		assert.ok(resetLogs.length >= 2, 'resetDefaults must emit caller label reset_defaults for context and cache');
+	});
+
+	// =========================================================================
+	// Version 0.6.6 Task B Tests: Request Diagnostics & Request Object Handling
+	// =========================================================================
+
+	// Test 54: wrapFetch emits request_seen with required fields for string, URL, and Request inputs
+	await test('0.6.6 Test 54: wrapFetch emits request_seen for string, URL, and Request objects when cc_debug is active', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		fakeWindow.fetch = async (input, init) => {
+			return {
+				status: 200,
+				headers: {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+				}
+			};
+		};
+		bridge.wrapFetch(fakeWindow);
+
+		// 1. Fetch with string URL and query params
+		await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/chat_conversations/22222222-2222-2222-2222-222222222222?tree=true');
+		const strLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.inputType === 'string');
+		assert.ok(strLog, 'Must emit request_seen for string input');
+		assert.strictEqual(strLog.payload.data.method, 'GET');
+		assert.strictEqual(strLog.payload.data.host, 'claude.ai');
+		assert.strictEqual(strLog.payload.data.pathShape, '/api/organizations/:id/chat_conversations/:id');
+		assert.strictEqual(strLog.payload.data.status, 200);
+		assert.strictEqual(strLog.payload.data['content-type'], 'application/json');
+		assert.strictEqual(strLog.payload.data.inputType, 'string');
+		// Privacy check: no query params, bodies, or cookies in data
+		assert.strictEqual(JSON.stringify(strLog.payload.data).includes('tree'), false, 'Query string must NOT leak');
+
+		// 2. Fetch with URL object
+		await fakeWindow.fetch(new URL('https://claude.ai/api/bootstrap'));
+		const urlLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.inputType === 'url');
+		assert.ok(urlLog, 'Must emit request_seen for URL input');
+		assert.strictEqual(urlLog.payload.data.pathShape, '/api/bootstrap');
+		assert.strictEqual(urlLog.payload.data.inputType, 'url');
+
+		// 3. Fetch with Request / duck-typed Request object
+		const reqObj = {
+			url: 'https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/completion',
+			method: 'POST'
+		};
+		await fakeWindow.fetch(reqObj);
+		const reqLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.inputType === 'request');
+		assert.ok(reqLog, 'Must emit request_seen for Request input');
+		assert.strictEqual(reqLog.payload.data.method, 'POST');
+		assert.strictEqual(reqLog.payload.data.pathShape, '/api/organizations/:id/completion');
+		assert.strictEqual(reqLog.payload.data.inputType, 'request');
+	});
+
+	// Test 55: wrapFetch emits request_seen with status: 0 when fetch throws network error
+	await test('0.6.6 Test 55: wrapFetch emits request_seen with status 0 on network error', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		fakeWindow.fetch = async () => {
+			throw new Error('Failed to fetch');
+		};
+		bridge.wrapFetch(fakeWindow);
+
+		let threw = false;
+		try {
+			await fakeWindow.fetch('https://claude.ai/api/network_fail');
+		} catch {
+			threw = true;
+		}
+		assert.strictEqual(threw, true, 'Original page error must be preserved');
+
+		const failLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.pathShape === '/api/network_fail');
+		assert.ok(failLog, 'Must emit request_seen even on network error');
+		assert.strictEqual(failLog.payload.data.status, 0);
+	});
+
+	// Test 56: XMLHttpRequest emits request_seen on completion
+	await test('0.6.6 Test 56: XMLHttpRequest emits request_seen on completion when cc_debug is active', () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Mock XMLHttpRequest with real load listeners
+		class FakeXHR {
+			constructor() {
+				this._listeners = {};
+				this.status = 200;
+			}
+			open(method, url) {
+				this.method = method;
+				this.url = url;
+			}
+			send() {
+				setTimeout(() => {
+					if (this._listeners['load']) this._listeners['load'].forEach(fn => fn());
+					if (this._listeners['loadend']) this._listeners['loadend'].forEach(fn => fn());
+				}, 5);
+			}
+			addEventListener(evt, fn) {
+				if (!this._listeners[evt]) this._listeners[evt] = [];
+				this._listeners[evt].push(fn);
+			}
+			getResponseHeader(header) {
+				if (header.toLowerCase() === 'content-type') return 'application/json';
+				return null;
+			}
+		}
+
+		fakeWindow.XMLHttpRequest = FakeXHR;
+		global.XMLHttpRequest = FakeXHR;
+
+		// Use the REAL bridge wrapXHR function
+		bridge.wrapXHR(fakeWindow);
+
+		const xhr = new FakeXHR();
+		xhr.open('POST', 'https://claude.ai/api/xhr/test');
+		xhr.send();
+
+		return new Promise((resolve) => {
+			setTimeout(() => {
+				const xhrLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.pathShape === '/api/xhr/test');
+				assert.ok(xhrLog, 'XHR must emit request_seen');
+				assert.strictEqual(xhrLog.payload.data.method, 'POST');
+				assert.strictEqual(xhrLog.payload.data.status, 200);
+				assert.strictEqual(xhrLog.payload.data.inputType, 'string');
+				assert.strictEqual(xhrLog.payload.data['content-type'], 'application/json');
+				resolve();
+			}, 25);
+		});
+	});
+
+	// Test 57: cc_debug off produces zero request_seen or diag messages
+	await test('0.6.6 Test 57: cc_debug off produces zero request_seen messages', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'false');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		fakeWindow.fetch = async () => ({ status: 200, headers: { get: () => 'application/json' } });
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/api/test_quiet');
+		const diagLogs = postedMessages.filter(m => m.type === 'cc:diag');
+		assert.strictEqual(diagLogs.length, 0, 'No diag messages posted when cc_debug is false');
+	});
+
+	// Test 58: Ring buffer caps at 200 entries
+	await test('0.6.6 Test 58: Ring buffer caps at 200 entries (CC.CONST.DEBUG_LOG_MAX_ENTRIES = 200)', () => {
+		assert.strictEqual(global.ClaudeCounter.CONST.DEBUG_LOG_MAX_ENTRIES, 200, 'DEBUG_LOG_MAX_ENTRIES must be 200');
+
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		// Simulate 250 diag entries sent to content script
+		for (let i = 0; i < 250; i++) {
+			bridgeListeners['cc:diag']({
+				category: 'request_seen',
+				data: { method: 'GET', host: 'claude.ai', pathShape: `/api/req/${i}`, status: 200 }
+			});
+		}
+
+		const exported = JSON.parse(globalThis.__CC_COPY_DEBUG_LOG());
+		assert.strictEqual(exported.length, 200, 'Debug log buffer must be capped at 200 entries');
+		// Oldest entries must have shifted off:
+		const hasOld = exported.some(e => e.data?.pathShape === '/api/req/0');
+		assert.strictEqual(hasOld, false, 'Oldest entries must have shifted off');
+		const hasNew = exported.some(e => e.data?.pathShape === '/api/req/249');
+		assert.strictEqual(hasNew, true, 'Newest entry must be present');
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

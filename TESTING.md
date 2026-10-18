@@ -1,4 +1,55 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.5)
+# Testing Checklist: Usage Meter for Claude (v0.6.6)
+
+## Brave & Chrome Checklist (v0.6.6 Context & Cache Default Off and Request Diagnostics)
+
+### 1. Fresh Profile First-Load Verification (Context & Cache OFF by default)
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. In DevTools Console, clear stored extension settings:
+     ```javascript
+     localStorage.removeItem('cc_settings');
+     ```
+  2. Reload the page (`Cmd + Shift + R`).
+- **Expected Results:**
+  - Panel renders with **Session (5h)** and **Weekly (7d)** rows visible.
+  - **Context** and **Cache** rows are hidden (`.cc-hidden`).
+  - Open settings drawer: Session and Weekly checkboxes are checked; Context and Cache checkboxes are unchecked.
+  - In DevTools Console, check `JSON.parse(localStorage.getItem('cc_settings'))`:
+    `showContext: false`, `showCache: false`, `showSession: true`, `showWeekly: true`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. User Manually Enabling Context / Cache Persists Across Reloads
+- **Preconditions:** Extension loaded on `https://claude.ai`.
+- **Steps:**
+  1. Open settings drawer (gear icon).
+  2. Under "Rows Visibility", check **Context** (and/or **Cache**).
+  3. Verify Context row immediately becomes visible in the panel.
+  4. Reload the page (`Cmd + Shift + R`).
+- **Expected Results:**
+  - Context row remains visible after reload.
+  - Settings drawer shows Context checkbox remains checked.
+  - User's manual choice is preserved without being reset.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 3. Request Diagnostics (`request_seen`) Verification
+- **Preconditions:** Enable debug mode in DevTools Console:
+  ```javascript
+  localStorage.setItem('cc_debug', 'true');
+  ```
+- **Steps:**
+  1. Reload `https://claude.ai` (`Cmd + Shift + R`).
+  2. Navigate between conversations or send a message.
+  3. Click the debug copy button in the settings drawer (or run `__CC_COPY_DEBUG_LOG()` in Console).
+  4. Search copied logs for `request_seen`.
+- **Expected Results:**
+  - `request_seen` entries appear for all network requests.
+  - Fields present: `method`, `host`, `pathShape` (with IDs redacted to `:id`), `status`, `content-type`, `inputType` (`'string' | 'url' | 'request'`).
+  - No query strings, request/response bodies, cookies, or authorization headers are present.
+  - Log buffer length is capped at 200 entries maximum.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave Checklist (v0.6.5 Context & Cache Row Visibility & Telemetry Fixes)
 

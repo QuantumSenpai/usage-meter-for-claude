@@ -840,12 +840,11 @@
 				opacity: 0.94,
 				showSession: true,
 				showWeekly: true,
-				showContext: true,
-				showCache: true,
+				showContext: false,
+				showCache: false,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000,
 				v060_migrated: true,
-				v061_migrated: true,
-				v062_migrated: true
+				v061_migrated: true
 			};
 			try {
 				const saved = localStorage.getItem('cc_settings');
@@ -866,18 +865,6 @@
 							parsed.showWeekly = true;
 							parsed.v061_migrated = true;
 							needsSave = true;
-						}
-
-						// Migration 3: v062 migration: restore showContext and showCache to true for already-migrated profiles
-						if (!parsed.v062_migrated) {
-							parsed.showContext = true;
-							parsed.showCache = true;
-							parsed.v062_migrated = true;
-							needsSave = true;
-							if (this.onDebugLog) {
-								this.onDebugLog('row_visibility_changed', { row: 'context', visible: true, caller: 'migration_v062' });
-								this.onDebugLog('row_visibility_changed', { row: 'cache', visible: true, caller: 'migration_v062' });
-							}
 						}
 
 						// Key validation (a) and fallback per key:
@@ -917,7 +904,7 @@
 							parsed.contextWindow = Math.round(cw);
 						}
 
-						// 5. booleans validation (missing or non-boolean values default to true)
+						// 5. booleans validation (missing or non-boolean values fall back to defaults)
 						if (typeof parsed.showSession !== 'boolean') {
 							parsed.showSession = defaults.showSession;
 						}
@@ -925,10 +912,10 @@
 							parsed.showWeekly = defaults.showWeekly;
 						}
 						if (typeof parsed.showContext !== 'boolean') {
-							parsed.showContext = true;
+							parsed.showContext = defaults.showContext;
 						}
 						if (typeof parsed.showCache !== 'boolean') {
-							parsed.showCache = true;
+							parsed.showCache = defaults.showCache;
 						}
 
 						if (needsSave) {
@@ -1448,16 +1435,15 @@
 				opacity: 0.94,
 				showSession: true,
 				showWeekly: true,
-				showContext: true,
-				showCache: true,
+				showContext: false,
+				showCache: false,
 				v060_migrated: true,
 				v061_migrated: true,
-				v062_migrated: true,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000
 			});
 			if (this.onDebugLog) {
-				this.onDebugLog('row_visibility_changed', { row: 'context', visible: true, caller: 'reset_defaults' });
-				this.onDebugLog('row_visibility_changed', { row: 'cache', visible: true, caller: 'reset_defaults' });
+				this.onDebugLog('row_visibility_changed', { row: 'context', visible: false, caller: 'reset_defaults' });
+				this.onDebugLog('row_visibility_changed', { row: 'cache', visible: false, caller: 'reset_defaults' });
 			}
 			this._saveSettings();
 			this.applyThemeAndSettings();

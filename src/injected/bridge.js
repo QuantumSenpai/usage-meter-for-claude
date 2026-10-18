@@ -37,11 +37,21 @@
 	function toAbsoluteUrl(input) {
 		try {
 			if (typeof input === 'string') {
-				if (input.startsWith('/')) return `${window.location.origin}${input}`;
+				if (input.startsWith('/')) {
+					const origin = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : 'https://claude.ai';
+					return `${origin}${input}`;
+				}
 				return input;
 			}
-			if (input instanceof URL) return input.href;
-			if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+			if (typeof URL !== 'undefined' && input instanceof URL) return input.href;
+			if ((typeof Request !== 'undefined' && input instanceof Request) || (input && typeof input === 'object' && typeof input.url === 'string')) {
+				const u = input.url;
+				if (typeof u === 'string' && u.startsWith('/')) {
+					const origin = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : 'https://claude.ai';
+					return `${origin}${u}`;
+				}
+				return u || '';
+			}
 		} catch {
 			// ignore
 		}
@@ -135,9 +145,9 @@
 			let urlStr = '';
 			if (typeof rawUrl === 'string') {
 				urlStr = rawUrl.trim();
-			} else if (rawUrl instanceof URL) {
+			} else if (typeof URL !== 'undefined' && rawUrl instanceof URL) {
 				urlStr = rawUrl.href;
-			} else if (typeof Request !== 'undefined' && rawUrl instanceof Request) {
+			} else if ((typeof Request !== 'undefined' && rawUrl instanceof Request) || (rawUrl && typeof rawUrl === 'object' && typeof rawUrl.url === 'string')) {
 				urlStr = rawUrl.url;
 			}
 			if (!urlStr) return '';
@@ -159,9 +169,9 @@
 			let urlStr = '';
 			if (typeof input === 'string') {
 				urlStr = input.trim();
-			} else if (input instanceof URL) {
+			} else if (typeof URL !== 'undefined' && input instanceof URL) {
 				urlStr = input.href;
-			} else if (typeof Request !== 'undefined' && input instanceof Request) {
+			} else if ((typeof Request !== 'undefined' && input instanceof Request) || (input && typeof input === 'object' && typeof input.url === 'string')) {
 				urlStr = input.url;
 			}
 			if (!urlStr) return '';
@@ -193,6 +203,15 @@
 		}
 	}
 
+	function getRequestInputType(rawInput) {
+		if (typeof rawInput === 'string') return 'string';
+		if (typeof URL !== 'undefined' && rawInput instanceof URL) return 'url';
+		if ((typeof Request !== 'undefined' && rawInput instanceof Request) || (rawInput && typeof rawInput === 'object' && typeof rawInput.url === 'string')) {
+			return 'request';
+		}
+		return typeof rawInput;
+	}
+
 	// 2. Wrap Fetch
 	let originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
 
@@ -204,11 +223,14 @@
 		targetWindow.fetch = async (...args) => {
 			let url = '';
 			let method = 'GET';
+			const rawInput = args[0];
+			const inputType = getRequestInputType(rawInput);
 
 			try {
-				url = toAbsoluteUrl(args[0]);
+				url = toAbsoluteUrl(rawInput);
 				const opts = args[1] || {};
-				method = (opts.method || (args[0] instanceof Request ? args[0].method : 'GET') || 'GET').toUpperCase();
+				const reqMethod = (rawInput && typeof rawInput === 'object' && typeof rawInput.method === 'string') ? rawInput.method : undefined;
+				method = (opts.method || reqMethod || 'GET').toUpperCase();
 			} catch {
 				// pass through safely
 			}
@@ -231,7 +253,40 @@
 			try {
 				response = await originalFetch(...args);
 			} catch (err) {
+				try {
+					postDiag('request_seen', {
+						method,
+						host: getHost(url || rawInput),
+						pathShape: computePathShape(url || rawInput),
+						status: 0,
+						'content-type': '',
+						contentType: '',
+						inputType,
+						input: inputType
+					});
+				} catch {
+					// ignore
+				}
 				throw err; // preserve original page behavior
+			}
+
+			// Diagnostic logging: request_seen
+			try {
+				const ct = (typeof response?.headers?.get === 'function'
+					? response.headers.get('content-type')
+					: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
+				postDiag('request_seen', {
+					method,
+					host: getHost(url || rawInput),
+					pathShape: computePathShape(url || rawInput),
+					status: (typeof response?.status === 'number') ? response.status : 0,
+					'content-type': ct,
+					contentType: ct,
+					inputType,
+					input: inputType
+				});
+			} catch {
+				// ignore
 			}
 
 			// Non-blocking response inspection
@@ -333,17 +388,56 @@
 	}
 
 	// 3. Wrap XHR for completeness
-	if (typeof XMLHttpRequest !== 'undefined') {
-		const originalOpen = XMLHttpRequest.prototype.open;
-		const originalSend = XMLHttpRequest.prototype.send;
+	function wrapXHR(targetGlobal = (typeof window !== 'undefined' ? window : null)) {
+		const XHR = targetGlobal?.XMLHttpRequest || (typeof XMLHttpRequest !== 'undefined' ? XMLHttpRequest : null);
+		if (!XHR || !XHR.prototype || XHR.__cc_wrapped__) return;
+		XHR.__cc_wrapped__ = true;
 
-		XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+		const originalOpen = XHR.prototype.open;
+		const originalSend = XHR.prototype.send;
+
+		XHR.prototype.open = function (method, url, ...rest) {
+			this.__cc_raw_input = url;
 			this.__cc_url = toAbsoluteUrl(url);
 			this.__cc_method = (method || 'GET').toUpperCase();
 			return originalOpen.call(this, method, url, ...rest);
 		};
 
-		XMLHttpRequest.prototype.send = function (...args) {
+		XHR.prototype.send = function (...args) {
+			const logXhrSeen = () => {
+				if (this.__cc_seen_logged) return;
+				this.__cc_seen_logged = true;
+				try {
+					let ct = '';
+					try {
+						ct = (typeof this.getResponseHeader === 'function' ? this.getResponseHeader('content-type') : '') || '';
+					} catch {
+						// ignore
+					}
+					const rawInput = this.__cc_raw_input;
+					const inputType = getRequestInputType(rawInput);
+					postDiag('request_seen', {
+						method: this.__cc_method || 'GET',
+						host: getHost(this.__cc_url || rawInput),
+						pathShape: computePathShape(this.__cc_url || rawInput),
+						status: (typeof this.status === 'number') ? this.status : 0,
+						'content-type': ct,
+						contentType: ct,
+						inputType,
+						input: inputType
+					});
+				} catch {
+					// ignore
+				}
+			};
+
+			if (typeof this.addEventListener === 'function') {
+				this.addEventListener('loadend', logXhrSeen);
+				this.addEventListener('load', logXhrSeen);
+				this.addEventListener('error', logXhrSeen);
+				this.addEventListener('abort', logXhrSeen);
+			}
+
 			if (this.__cc_url) {
 				const detectedOrg = getOrgMeta(this.__cc_url);
 				if (detectedOrg) post('cc:detected_org', { orgId: detectedOrg });
@@ -380,6 +474,10 @@
 			}
 			return originalSend.call(this, ...args);
 		};
+	}
+
+	if (typeof XMLHttpRequest !== 'undefined') {
+		wrapXHR(typeof window !== 'undefined' ? window : null);
 	}
 
 	async function handleConversationResponse({ orgId, conversationId }, response, requestUrl = '') {
@@ -582,7 +680,10 @@
 			computePathShape,
 			wrapTransportConstructor,
 			initTransportProxies,
-			wrapFetch
+			wrapFetch,
+			wrapXHR,
+			toAbsoluteUrl,
+			getRequestInputType
 		};
 	}
 })();
