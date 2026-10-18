@@ -765,3 +765,25 @@ Before starting each test round, ensure the latest unpacked extension is loaded:
   - [ ] Pass  [ ] Fail
   - *Notes:* _____________________________
 
+---
+
+### 14. Connect-RPC Stream Timeline Diagnostics (0.6.9)
+- **Preconditions:**
+  1. `localStorage.setItem('cc_debug', 'true')` enabled on `https://claude.ai`.
+  2. Open DevTools Console and Network tabs.
+- **Steps:**
+  1. Open or start a chat on `https://claude.ai`.
+  2. Send a message to trigger `POST .../ConversationService/PerformAction` and response streaming on `POST .../ConversationService/StreamTimeline`.
+  3. Observe console messages `[UsageMeter:Debug]`.
+  4. Click the clipboard icon in the panel header next to the gear to copy the full diagnostic debug log.
+- **Expected Results:**
+  - `proto_frame_meta`: Emits for the first 40 frames of the stream containing only `{ pathShape, frameIndex, flags, length }`. Zero payload bytes logged.
+  - `proto_compressed_seen`: If bit 0 of `flags` is set, emits `{ pathShape, frameIndex }`. Zero payload bytes logged.
+  - `proto_token_seen`: If target token is encountered, emits `{ pathShape, token, count, firstOffset, frameIndex }`.
+  - `proto_scan_done`: Emits with `reason: 'stream_end'`, `'size_cap'`, or `'time_cap'`. For `StreamTimeline`, time cap is 600s (not 15s) and byte cap is 1 MiB (1048576 bytes).
+  - Original webpage chat stream remains completely unbroken and smooth.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+  - *Notes:* _____________________________
+
+

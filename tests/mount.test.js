@@ -3393,7 +3393,7 @@ async function test(name, fn) {
 		});
 		bridge.wrapFetch(fakeWindow);
 
-		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction', {
 			method: 'POST'
 		});
 		await new Promise(r => setTimeout(r, 25));
@@ -3507,6 +3507,468 @@ async function test(name, fn) {
 
 		const p3 = await pageReader.read();
 		assert.strictEqual(p3.done, true);
+	});
+
+	// Test 70: (a) token placed after 20 seconds of fake time is still found (stream without time cap)
+	await test('0.6.9 Test 70: (a) token placed after 20 seconds of fake time is still found (stream without time cap)', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		const originalSetTimeout = global.setTimeout;
+		const originalClearTimeout = global.clearTimeout;
+		let capturedTimer = null;
+
+		global.setTimeout = (fn, delay) => {
+			if (delay === 600000 || delay === 15000) {
+				capturedTimer = { fn, delay };
+				return capturedTimer;
+			}
+			return originalSetTimeout(fn, delay);
+		};
+		global.clearTimeout = (id) => {
+			if (id && id === capturedTimer) {
+				capturedTimer = null;
+				return;
+			}
+			return originalClearTimeout(id);
+		};
+
+		try {
+			// Connect frame with "within_limit" token in payload
+			const tokenStr = 'within_limit';
+			const tokenBytes = new TextEncoder().encode(tokenStr);
+			const frame = new Uint8Array(5 + tokenBytes.length);
+			frame[0] = 0; // flags = 0
+			// big endian length = tokenBytes.length
+			frame[1] = 0; frame[2] = 0; frame[3] = 0; frame[4] = tokenBytes.length;
+			frame.set(tokenBytes, 5);
+
+			let readCount = 0;
+			let deliverChunk2;
+			const chunk2Promise = new Promise(resolve => { deliverChunk2 = resolve; });
+
+			fakeWindow.fetch = async () => ({
+				status: 200,
+				ok: true,
+				headers: {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				},
+				clone() {
+					return {
+						body: {
+							getReader() {
+								return {
+									read: async () => {
+										readCount++;
+										if (readCount === 1) {
+											// Chunk 1: arbitrary 3 bytes at t=0
+											return { done: false, value: new Uint8Array([0x01, 0x02, 0x03]) };
+										}
+										if (readCount === 2) {
+											// Wait until fake time advances 20s
+											return await chunk2Promise;
+										}
+										return { done: true, value: undefined };
+									},
+									cancel: async () => {}
+								};
+							}
+						}
+					};
+				}
+			});
+			bridge.wrapFetch(fakeWindow);
+
+			const fetchPromise = fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+				method: 'POST'
+			});
+
+			// Allow read 1 to occur and timer to be scheduled
+			await new Promise(r => originalSetTimeout(r, 20));
+
+			// Verify StreamTimeline timer is scheduled for 600,000ms (600s), NOT 15,000ms (15s)
+			assert.ok(capturedTimer, 'Scan timer must be captured');
+			assert.strictEqual(capturedTimer.delay, 600000, 'StreamTimeline must use 600s hard cap, not 15s');
+
+			// Simulate passage of 20 seconds (20,000 ms) of fake time.
+			// In fake time: 20,000ms < 600,000ms, so capturedTimer does NOT fire.
+			// (If it were the old 15s cap, 20,000ms >= 15,000ms would have fired it).
+
+			// Chunk 2 arrives with the frame containing token
+			deliverChunk2({ done: false, value: frame });
+			await fetchPromise;
+			await new Promise(r => originalSetTimeout(r, 25));
+
+			// Token is found!
+			const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'within_limit');
+			assert.ok(tokenLog, 'proto_token_seen must be logged for token placed after 20 seconds');
+			assert.strictEqual(tokenLog.payload.data.token, 'within_limit');
+			assert.strictEqual(tokenLog.payload.data.count, 1);
+			assert.strictEqual(tokenLog.payload.data.firstOffset, 8);
+			assert.strictEqual(tokenLog.payload.data.frameIndex, 0);
+			const keys = Object.keys(tokenLog.payload.data).sort();
+			assert.deepStrictEqual(keys, ['count', 'firstOffset', 'frameIndex', 'pathShape', 'token'].sort());
+		} finally {
+			global.setTimeout = originalSetTimeout;
+			global.clearTimeout = originalClearTimeout;
+		}
+	});
+
+	// Test 71: (b) frame headers split across two chunks are parsed correctly and only flag + length are logged
+	await test('0.6.9 Test 71: (b) frame headers split across two chunks are parsed correctly and only flag + length are logged', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Header is 5 bytes: flags = 0, length = 6 [0x00, 0x00, 0x00, 0x00, 0x06]
+		// Payload is 6 bytes: [0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34]
+		// Split header: Chunk 1 has 2 bytes of header [0x00, 0x00]
+		// Chunk 2 has remaining 3 bytes of header [0x00, 0x00, 0x06] + 6 bytes of payload
+		const chunk1 = new Uint8Array([0x00, 0x00]);
+		const chunk2 = new Uint8Array([0x00, 0x00, 0x06, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34]);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk1 };
+									if (readStep === 2) return { done: false, value: chunk2 };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameMetaLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_meta');
+		assert.ok(frameMetaLog, 'proto_frame_meta must be logged for split-header frame');
+		assert.strictEqual(frameMetaLog.payload.data.frameIndex, 0);
+		assert.strictEqual(frameMetaLog.payload.data.flags, 0);
+		assert.strictEqual(frameMetaLog.payload.data.length, 6);
+
+		// Ensure ONLY pathShape, frameIndex, flags, length are logged
+		const keys = Object.keys(frameMetaLog.payload.data).sort();
+		assert.deepStrictEqual(keys, ['flags', 'frameIndex', 'length', 'pathShape'].sort());
+
+		// Ensure NO payload bytes anywhere in posted messages
+		const allMessagesStr = JSON.stringify(postedMessages);
+		assert.strictEqual(allMessagesStr.includes('CA'), false, 'Payload byte must NOT leak');
+		assert.strictEqual(allMessagesStr.includes('202'), false, 'Payload byte 0xCA (202) must NOT leak');
+		assert.strictEqual(allMessagesStr.includes('254'), false, 'Payload byte 0xFE (254) must NOT leak');
+	});
+
+	// Test 72: (c) a compressed-flag frame logs proto_compressed_seen and no payload
+	await test('0.6.9 Test 72: (c) a compressed-flag frame logs proto_compressed_seen and no payload', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Header is 5 bytes: flags = 1 (compressed, bit 0 set), length = 8 [0x01, 0x00, 0x00, 0x00, 0x08]
+		// Payload is 8 bytes: [0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC]
+		const frame = new Uint8Array([0x01, 0x00, 0x00, 0x00, 0x08, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC]);
+
+		let readCount = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readCount++;
+									if (readCount === 1) return { done: false, value: frame };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameMetaLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_meta');
+		assert.ok(frameMetaLog, 'proto_frame_meta must be logged');
+		assert.strictEqual(frameMetaLog.payload.data.flags, 1);
+		assert.strictEqual(frameMetaLog.payload.data.length, 8);
+
+		const compLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_compressed_seen');
+		assert.ok(compLog, 'proto_compressed_seen must be logged when bit 0 of flags is set');
+		assert.strictEqual(compLog.payload.data.frameIndex, 0);
+
+		// Ensure ONLY pathShape and frameIndex are in proto_compressed_seen
+		const keys = Object.keys(compLog.payload.data).sort();
+		assert.deepStrictEqual(keys, ['frameIndex', 'pathShape'].sort());
+
+		// Ensure NO payload bytes anywhere in posted messages
+		const allMessagesStr = JSON.stringify(postedMessages);
+		assert.strictEqual(allMessagesStr.includes('85'), false, 'Payload byte 0x55 (85) must NOT leak');
+		assert.strictEqual(allMessagesStr.includes('102'), false, 'Payload byte 0x66 (102) must NOT leak');
+	});
+
+	// Test 73: (d) 1 MiB byte cap and the 600s hard cap stop the scan and cancel only the clone reader
+	await test('0.6.9 Test 73: (d) 1 MiB byte cap and the 600s hard cap stop the scan and cancel only the clone reader', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		// Part 1: 1 MiB byte cap
+		{
+			const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+			let cancelCalled = false;
+			let chunkYieldCount = 0;
+			const chunk64k = new Uint8Array(65536);
+
+			fakeWindow.fetch = async () => ({
+				status: 200,
+				ok: true,
+				headers: {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				},
+				clone() {
+					return {
+						body: {
+							getReader() {
+								return {
+									read: async () => {
+										chunkYieldCount++;
+										// 20 chunks of 64k = 1,310,720 bytes (> 1,048,576 byte cap)
+										if (chunkYieldCount <= 20) return { done: false, value: chunk64k };
+										return { done: true, value: undefined };
+									},
+									cancel: async () => {
+										cancelCalled = true;
+									}
+								};
+							}
+						}
+					};
+				}
+			});
+			bridge.wrapFetch(fakeWindow);
+
+			await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+				method: 'POST'
+			});
+			await new Promise(r => setTimeout(r, 25));
+
+			const doneLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+			assert.ok(doneLog, 'proto_scan_done must be logged on reaching size cap');
+			assert.strictEqual(doneLog.payload.data.reason, 'size_cap');
+			assert.strictEqual(doneLog.payload.data.bytesRead, 1048576, 'StreamTimeline must cap at exactly 1 MiB (1048576 bytes)');
+			assert.strictEqual(cancelCalled, true, 'Clone reader cancel must be called on reaching size_cap');
+		}
+
+		// Part 2: 600s hard cap
+		{
+			const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+			const originalSetTimeout = global.setTimeout;
+			const originalClearTimeout = global.clearTimeout;
+			let timerCallback = null;
+			let timerDelay = 0;
+			let cancelCalled = false;
+
+			global.setTimeout = (fn, delay) => {
+				if (delay === 600000 || delay === 15000) {
+					timerCallback = fn;
+					timerDelay = delay;
+					return { fn, delay };
+				}
+				return originalSetTimeout(fn, delay);
+			};
+			global.clearTimeout = (id) => {
+				if (id && id.fn === timerCallback) {
+					timerCallback = null;
+					return;
+				}
+				return originalClearTimeout(id);
+			};
+
+			try {
+				let rejectRead;
+				fakeWindow.fetch = async () => ({
+					status: 200,
+					ok: true,
+					headers: {
+						get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+					},
+					clone() {
+						return {
+							body: {
+								getReader() {
+									return {
+										read: async () => new Promise((_, reject) => { rejectRead = reject; }),
+										cancel: async () => {
+											cancelCalled = true;
+											if (rejectRead) rejectRead(new Error('Reader cancelled'));
+										}
+									};
+								}
+							}
+						};
+					}
+				});
+				bridge.wrapFetch(fakeWindow);
+
+				fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+					method: 'POST'
+				});
+				await new Promise(r => originalSetTimeout(r, 20));
+
+				assert.strictEqual(timerDelay, 600000, 'StreamTimeline must have 600s hard cap');
+				assert.ok(timerCallback, 'Timeout callback must be registered');
+
+				// Fire the 600s timer
+				timerCallback();
+				await new Promise(r => originalSetTimeout(r, 25));
+
+				assert.strictEqual(cancelCalled, true, 'Clone reader cancel must be called on time cap');
+				const doneLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+				assert.ok(doneLog, 'proto_scan_done must be logged on time cap');
+				assert.strictEqual(doneLog.payload.data.reason, 'time_cap');
+			} finally {
+				global.setTimeout = originalSetTimeout;
+				global.clearTimeout = originalClearTimeout;
+			}
+		}
+	});
+
+	// Test 74: (e) original body still fully readable by the page (behavioral negative proof)
+	await test('0.6.9 Test 74: (e) original body still fully readable by the page', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+
+		const chunk1 = new TextEncoder().encode('original_chunk_1_representativeClaim_');
+		const chunk2 = new TextEncoder().encode('original_chunk_2_overage_');
+
+		class ReadableStreamSimulation {
+			constructor(chunks) {
+				this.chunks = [...chunks];
+				this.locked = false;
+			}
+			getReader() {
+				if (this.locked) throw new Error('ReadableStream is locked');
+				this.locked = true;
+				let idx = 0;
+				return {
+					read: async () => {
+						if (idx < this.chunks.length) return { done: false, value: this.chunks[idx++] };
+						return { done: true, value: undefined };
+					},
+					cancel: async () => {}
+				};
+			}
+		}
+
+		class ResponseSimulation {
+			constructor() {
+				this.status = 200;
+				this.ok = true;
+				this.headers = {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				};
+				this.body = new ReadableStreamSimulation([chunk1, chunk2]);
+			}
+			clone() {
+				const c = new ResponseSimulation();
+				c.body = new ReadableStreamSimulation([chunk1, chunk2]);
+				return c;
+			}
+		}
+
+		fakeWindow.fetch = async () => new ResponseSimulation();
+		bridge.wrapFetch(fakeWindow);
+
+		const response = await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline');
+
+		// Page reads original response body
+		const reader = response.body.getReader();
+		const r1 = await reader.read();
+		assert.strictEqual(r1.done, false);
+		assert.strictEqual(new TextDecoder().decode(r1.value), 'original_chunk_1_representativeClaim_');
+
+		const r2 = await reader.read();
+		assert.strictEqual(r2.done, false);
+		assert.strictEqual(new TextDecoder().decode(r2.value), 'original_chunk_2_overage_');
+
+		const r3 = await reader.read();
+		assert.strictEqual(r3.done, true);
+	});
+
+	// Test 75: (f) cc_debug off => response.clone never called
+	await test('0.6.9 Test 75: (f) cc_debug off => response.clone never called', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'false');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let cloneCalled = false;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				cloneCalled = true;
+				return this;
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline');
+		await new Promise(r => setTimeout(r, 25));
+
+		assert.strictEqual(cloneCalled, false, 'response.clone() must NEVER be called when cc_debug is false');
+		const diagMsgs = postedMessages.filter(m => m.type === 'cc:diag');
+		assert.strictEqual(diagMsgs.length, 0, 'Zero diag messages when cc_debug is false');
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

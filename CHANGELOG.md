@@ -2,6 +2,23 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.9] - 2026-10-18
+
+### Extended StreamTimeline Scanning, Connect Frame Metadata & Expanded Token Set
+- **StreamTimeline Scanning Extension (`POST .../StreamTimeline`):**
+  - For long-lived `/claudeai-rpc/` responses whose pathname ends with `/StreamTimeline`, removed the 15-second time cap.
+  - Added a 600-second (10-minute) hard cap and raised the byte cap to 1,048,576 total bytes (1 MiB) per stream, allowing message reply phases to be scanned.
+  - Other RPC and protobuf paths strictly retain their existing 15-second time cap and 262,144-byte (256 KB) cap.
+  - Scanner continues to cancel only the cloned reader upon completion, timeout, or cap, leaving the original response body untouched and readable by the page.
+- **Connect-RPC Envelope Frame Metadata (`proto_frame_meta` & `proto_compressed_seen`):**
+  - Parses 5-byte Connect envelope frame headers (1-byte flag, 4-byte big-endian unsigned length) across stream chunk boundaries.
+  - Emits `proto_frame_meta { pathShape, frameIndex, flags, length }` for the first 40 frames of each scanned stream, logging ONLY the flag byte and length number with zero payload bytes logged.
+  - If a frame has the compressed flag set (bit 0 set: `(flags & 0x01) !== 0`), also emits `proto_compressed_seen { pathShape, frameIndex }` without logging any payload bytes.
+- **Expanded Token Set & Frame Mapping (`proto_token_seen`):**
+  - Expanded search tokens to 10 targets: `five_hour`, `seven_day`, `within_limit`, `utilization`, `message_limit`, `resets_at`, `rate_limit`, `usage_limit`, `representativeClaim`, `overage`.
+  - Added `frameIndex` mapping to `proto_token_seen { pathShape, token, count, firstOffset, frameIndex }` indicating which Connect frame contains the first occurrence of the token.
+  - Raised the per-page cap for `proto_token_seen` to 80 entries (JSON key dedupe and 40-entry cap remain untouched).
+
 ## [0.6.8] - 2026-10-18
 
 ### Diagnostic Limit Scanners (JSON & Binary Proto) for Connect-RPC

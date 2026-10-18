@@ -284,16 +284,22 @@
 		'message_limit',
 		'resets_at',
 		'rate_limit',
-		'usage_limit'
+		'usage_limit',
+		'representativeClaim',
+		'overage'
 	];
 	const MAX_LIMIT_KEYS = 40;
-	const MAX_PROTO_LOGS = 40;
+	const MAX_PROTO_TOKEN_LOGS = 80;
+	const MAX_PROTO_DONE_LOGS = 40;
 	const MAX_PROTO_SCAN_BYTES = 262144; // 256 KB
 	const MAX_PROTO_SCAN_TIME_MS = 15000; // 15s
+	const STREAM_TIMELINE_MAX_BYTES = 1048576; // 1 MiB
+	const STREAM_TIMELINE_HARD_CAP_MS = 600000; // 600s
 
 	let limitKeyCount = 0;
 	const seenLimitKeys = new Set();
-	let protoLogCount = 0;
+	let protoTokenLogCount = 0;
+	let protoDoneLogCount = 0;
 
 	function getValueType(val) {
 		if (val === null) return 'null';
@@ -380,7 +386,7 @@
 	async function scanBinaryResponse(response, pathShape, host, pathname, ct) {
 		try {
 			if (!isDebugActive()) return;
-			if (protoLogCount >= MAX_PROTO_LOGS) return;
+			if (protoDoneLogCount >= MAX_PROTO_DONE_LOGS && protoTokenLogCount >= MAX_PROTO_TOKEN_LOGS) return;
 
 			const isProtoCt = Boolean(ct && ct.toLowerCase().includes('proto'));
 			const isRpcPath = host === 'claude.ai' && pathname.startsWith('/claudeai-rpc/');
@@ -396,10 +402,80 @@
 			const reader = cloned?.body?.getReader?.();
 			if (!reader) return;
 
+			const isStreamTimeline = isRpcPath && (pathname.endsWith('/StreamTimeline') || pathname.endsWith('/StreamTimeline/'));
+			const maxBytes = isStreamTimeline ? STREAM_TIMELINE_MAX_BYTES : MAX_PROTO_SCAN_BYTES;
+			const maxTimeMs = isStreamTimeline ? STREAM_TIMELINE_HARD_CAP_MS : MAX_PROTO_SCAN_TIME_MS;
+
 			const chunks = [];
 			let totalBytes = 0;
 			let reason = 'stream_end';
 			let timedOut = false;
+
+			// Connect frame parser state
+			let streamFrameIndex = 0;
+			let streamFrameMetaCount = 0; // max 40 per scanned stream
+			const parsedFrames = []; // { frameIndex, start, end }
+
+			let parserState = 0; // 0 = reading 5-byte header, 1 = skipping payload
+			const headerBuf = new Uint8Array(5);
+			let headerBytesNeeded = 5;
+			let currentPayloadRemaining = 0;
+			let currentFrameStart = 0;
+
+			function processChunkForFrames(chunk) {
+				let i = 0;
+				while (i < chunk.length) {
+					if (parserState === 0) {
+						const needed = headerBytesNeeded;
+						const available = chunk.length - i;
+						if (available < needed) {
+							headerBuf.set(chunk.subarray(i, i + available), 5 - needed);
+							headerBytesNeeded -= available;
+							i += available;
+						} else {
+							headerBuf.set(chunk.subarray(i, i + needed), 5 - needed);
+							i += needed;
+							headerBytesNeeded = 5;
+
+							const flags = headerBuf[0];
+							const length = ((headerBuf[1] << 24) | (headerBuf[2] << 16) | (headerBuf[3] << 8) | headerBuf[4]) >>> 0;
+
+							const fIndex = streamFrameIndex++;
+							const frameStart = currentFrameStart;
+							const frameEnd = frameStart + 5 + length;
+							parsedFrames.push({ frameIndex: fIndex, start: frameStart, end: frameEnd });
+
+							if (streamFrameMetaCount < 40) {
+								streamFrameMetaCount++;
+								postDiag('proto_frame_meta', { pathShape, frameIndex: fIndex, flags, length });
+								if ((flags & 0x01) !== 0) {
+									postDiag('proto_compressed_seen', { pathShape, frameIndex: fIndex });
+								}
+							}
+
+							currentPayloadRemaining = length;
+							if (length === 0) {
+								parserState = 0;
+								currentFrameStart = frameEnd;
+							} else {
+								parserState = 1;
+							}
+						}
+					} else {
+						const needed = currentPayloadRemaining;
+						const available = chunk.length - i;
+						if (available < needed) {
+							currentPayloadRemaining -= available;
+							i += available;
+						} else {
+							i += needed;
+							currentPayloadRemaining = 0;
+							parserState = 0;
+							currentFrameStart = (parsedFrames.length > 0) ? parsedFrames[parsedFrames.length - 1].end : (currentFrameStart + 5);
+						}
+					}
+				}
+			}
 
 			const timer = setTimeout(() => {
 				timedOut = true;
@@ -408,7 +484,7 @@
 				} catch {
 					// ignore
 				}
-			}, MAX_PROTO_SCAN_TIME_MS);
+			}, maxTimeMs);
 
 			try {
 				while (true) {
@@ -432,14 +508,17 @@
 					}
 
 					if (value && value.length > 0) {
-						const remaining = MAX_PROTO_SCAN_BYTES - totalBytes;
+						const remaining = maxBytes - totalBytes;
 						if (value.length >= remaining) {
-							chunks.push(value.subarray(0, remaining));
+							const slice = value.subarray(0, remaining);
+							chunks.push(slice);
+							processChunkForFrames(slice);
 							totalBytes += remaining;
 							reason = 'size_cap';
 							break;
 						} else {
 							chunks.push(value);
+							processChunkForFrames(value);
 							totalBytes += value.length;
 						}
 					}
@@ -463,7 +542,7 @@
 
 				const text = new TextDecoder('latin1').decode(fullBuffer);
 				for (const token of PROTO_TOKENS) {
-					if (protoLogCount >= MAX_PROTO_LOGS) break;
+					if (protoTokenLogCount >= MAX_PROTO_TOKEN_LOGS) break;
 					let count = 0;
 					let firstOffset = -1;
 					let pos = 0;
@@ -472,15 +551,28 @@
 						count++;
 						pos += token.length;
 					}
-					if (count > 0 && protoLogCount < MAX_PROTO_LOGS) {
-						protoLogCount++;
-						postDiag('proto_token_seen', { pathShape, token, count, firstOffset });
+					if (count > 0 && protoTokenLogCount < MAX_PROTO_TOKEN_LOGS) {
+						protoTokenLogCount++;
+						let matchedFrameIndex = -1;
+						for (const f of parsedFrames) {
+							if (firstOffset >= f.start && firstOffset < f.end) {
+								matchedFrameIndex = f.frameIndex;
+								break;
+							}
+						}
+						postDiag('proto_token_seen', {
+							pathShape,
+							token,
+							count,
+							firstOffset,
+							frameIndex: matchedFrameIndex
+						});
 					}
 				}
 			}
 
-			if (protoLogCount < MAX_PROTO_LOGS) {
-				protoLogCount++;
+			if (protoDoneLogCount < MAX_PROTO_DONE_LOGS) {
+				protoDoneLogCount++;
 				postDiag('proto_scan_done', { pathShape, bytesRead: totalBytes, reason });
 			}
 		} catch {
