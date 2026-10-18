@@ -274,6 +274,251 @@
 		}
 	}
 
+	// 1.5 Diagnostic JSON & Proto Scanners (Active only when cc_debug is on)
+	const LIMIT_KEY_REGEX = /limit|usage|utiliz|quota|remaining|reset|percent|severity|notice|banner/i;
+	const PROTO_TOKENS = [
+		'five_hour',
+		'seven_day',
+		'within_limit',
+		'utilization',
+		'message_limit',
+		'resets_at',
+		'rate_limit',
+		'usage_limit'
+	];
+	const MAX_LIMIT_KEYS = 40;
+	const MAX_PROTO_LOGS = 40;
+	const MAX_PROTO_SCAN_BYTES = 262144; // 256 KB
+	const MAX_PROTO_SCAN_TIME_MS = 15000; // 15s
+
+	let limitKeyCount = 0;
+	const seenLimitKeys = new Set();
+	let protoLogCount = 0;
+
+	function getValueType(val) {
+		if (val === null) return 'null';
+		if (Array.isArray(val)) return 'array';
+		const t = typeof val;
+		if (t === 'number') return 'number';
+		if (t === 'string') return 'string';
+		if (t === 'boolean') return 'boolean';
+		if (t === 'object') return 'object';
+		return t;
+	}
+
+	function walkJson(obj, currentPath, depth, pathShape) {
+		if (!obj || typeof obj !== 'object' || depth > 6) return;
+		if (limitKeyCount >= MAX_LIMIT_KEYS) return;
+
+		if (Array.isArray(obj)) {
+			for (let i = 0; i < obj.length; i++) {
+				if (limitKeyCount >= MAX_LIMIT_KEYS) break;
+				const nextPath = currentPath ? `${currentPath}[${i}]` : `[${i}]`;
+				walkJson(obj[i], nextPath, depth + 1, pathShape);
+			}
+			return;
+		}
+
+		const keys = Object.keys(obj);
+		for (const k of keys) {
+			if (limitKeyCount >= MAX_LIMIT_KEYS) break;
+			const nextPath = currentPath ? `${currentPath}.${k}` : k;
+			const val = obj[k];
+
+			if (LIMIT_KEY_REGEX.test(k)) {
+				const dedupeKey = `${pathShape}::${nextPath}`;
+				if (!seenLimitKeys.has(dedupeKey)) {
+					seenLimitKeys.add(dedupeKey);
+					limitKeyCount++;
+					postDiag('limit_key_seen', {
+						pathShape,
+						keyPath: nextPath,
+						valueType: getValueType(val)
+					});
+				}
+			}
+
+			if (val && typeof val === 'object' && depth < 6) {
+				walkJson(val, nextPath, depth + 1, pathShape);
+			}
+		}
+	}
+
+	async function scanJsonResponse(response, pathShape, host, pathname, ct) {
+		try {
+			if (!isDebugActive()) return;
+			if (limitKeyCount >= MAX_LIMIT_KEYS) return;
+			if (host !== 'claude.ai') return;
+			if (!pathname.startsWith('/api/')) return;
+			if (response.status !== 200) return;
+			if (!ct || !ct.toLowerCase().includes('application/json')) return;
+
+			let cloned;
+			try {
+				cloned = response.clone();
+			} catch {
+				return;
+			}
+
+			const text = await cloned.text();
+			if (typeof text !== 'string' || text.length > 200000) return;
+
+			let data;
+			try {
+				data = JSON.parse(text);
+			} catch {
+				return;
+			}
+			if (!data || typeof data !== 'object') return;
+
+			walkJson(data, '', 1, pathShape);
+		} catch {
+			// ignore
+		}
+	}
+
+	async function scanBinaryResponse(response, pathShape, host, pathname, ct) {
+		try {
+			if (!isDebugActive()) return;
+			if (protoLogCount >= MAX_PROTO_LOGS) return;
+
+			const isProtoCt = Boolean(ct && ct.toLowerCase().includes('proto'));
+			const isRpcPath = host === 'claude.ai' && pathname.startsWith('/claudeai-rpc/');
+			if (!isProtoCt && !isRpcPath) return;
+
+			let cloned;
+			try {
+				cloned = response.clone();
+			} catch {
+				return;
+			}
+
+			const reader = cloned?.body?.getReader?.();
+			if (!reader) return;
+
+			const chunks = [];
+			let totalBytes = 0;
+			let reason = 'stream_end';
+			let timedOut = false;
+
+			const timer = setTimeout(() => {
+				timedOut = true;
+				try {
+					reader.cancel().catch(() => {});
+				} catch {
+					// ignore
+				}
+			}, MAX_PROTO_SCAN_TIME_MS);
+
+			try {
+				while (true) {
+					let readResult;
+					try {
+						readResult = await reader.read();
+					} catch {
+						reason = timedOut ? 'time_cap' : 'error';
+						break;
+					}
+
+					if (timedOut) {
+						reason = 'time_cap';
+						break;
+					}
+
+					const { done, value } = readResult;
+					if (done) {
+						reason = 'stream_end';
+						break;
+					}
+
+					if (value && value.length > 0) {
+						const remaining = MAX_PROTO_SCAN_BYTES - totalBytes;
+						if (value.length >= remaining) {
+							chunks.push(value.subarray(0, remaining));
+							totalBytes += remaining;
+							reason = 'size_cap';
+							break;
+						} else {
+							chunks.push(value);
+							totalBytes += value.length;
+						}
+					}
+				}
+			} finally {
+				clearTimeout(timer);
+				try {
+					reader.cancel().catch(() => {});
+				} catch {
+					// ignore
+				}
+			}
+
+			if (totalBytes > 0) {
+				const fullBuffer = new Uint8Array(totalBytes);
+				let offset = 0;
+				for (const chunk of chunks) {
+					fullBuffer.set(chunk, offset);
+					offset += chunk.length;
+				}
+
+				const text = new TextDecoder('latin1').decode(fullBuffer);
+				for (const token of PROTO_TOKENS) {
+					if (protoLogCount >= MAX_PROTO_LOGS) break;
+					let count = 0;
+					let firstOffset = -1;
+					let pos = 0;
+					while ((pos = text.indexOf(token, pos)) !== -1) {
+						if (firstOffset === -1) firstOffset = pos;
+						count++;
+						pos += token.length;
+					}
+					if (count > 0 && protoLogCount < MAX_PROTO_LOGS) {
+						protoLogCount++;
+						postDiag('proto_token_seen', { pathShape, token, count, firstOffset });
+					}
+				}
+			}
+
+			if (protoLogCount < MAX_PROTO_LOGS) {
+				protoLogCount++;
+				postDiag('proto_scan_done', { pathShape, bytesRead: totalBytes, reason });
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	function inspectRequestBodyMeta(body) {
+		if (body === undefined || body === null) {
+			return { bodyType: 'empty', bodyByteLength: 0 };
+		}
+		if (typeof body === 'string') {
+			const len = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(body).length : body.length;
+			return { bodyType: 'string', bodyByteLength: len };
+		}
+		if (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) {
+			return { bodyType: 'arraybuffer', bodyByteLength: body.byteLength };
+		}
+		if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(body)) {
+			return { bodyType: 'typedarray', bodyByteLength: body.byteLength };
+		}
+		if (typeof Blob !== 'undefined' && body instanceof Blob) {
+			return { bodyType: 'blob', bodyByteLength: body.size };
+		}
+		if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+			const str = body.toString();
+			const len = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(str).length : str.length;
+			return { bodyType: 'urlsearchparams', bodyByteLength: len };
+		}
+		if (typeof FormData !== 'undefined' && body instanceof FormData) {
+			return { bodyType: 'formdata', bodyByteLength: -1 };
+		}
+		if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+			return { bodyType: 'stream', bodyByteLength: -1 };
+		}
+		return { bodyType: typeof body, bodyByteLength: -1 };
+	}
+
 	// 2. Wrap Fetch
 	let originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
 
@@ -297,6 +542,21 @@
 				// pass through safely
 			}
 
+			let host = '';
+			let pathname = '';
+			let pathShape = '';
+			try {
+				const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+					? window.location.origin
+					: 'https://claude.ai';
+				const parsed = new URL(url || rawInput, baseOrigin);
+				host = (parsed.hostname || '').toLowerCase();
+				pathname = parsed.pathname || '';
+			} catch {
+				// ignore
+			}
+			pathShape = computePathShape(url || rawInput);
+
 			// Capture org ID whenever seen
 			if (url) {
 				const detectedOrg = getOrgMeta(url);
@@ -308,6 +568,18 @@
 			// Detect completion start
 			if (method === 'POST' && isCompletionRequestUrl(url)) {
 				post('cc:generation_start', { url });
+			}
+
+			// Step 4: RPC request metadata (POST /claudeai-rpc/)
+			if (method === 'POST' && pathname.startsWith('/claudeai-rpc/')) {
+				try {
+					const opts = args[1] || {};
+					const bodyInput = opts.body !== undefined ? opts.body : (rawInput && typeof rawInput === 'object' ? rawInput.body : undefined);
+					const { bodyType, bodyByteLength } = inspectRequestBodyMeta(bodyInput);
+					postDiag('rpc_request_meta', { pathShape, bodyType, bodyByteLength });
+				} catch {
+					// ignore
+				}
 			}
 
 			// Execute actual fetch
@@ -342,14 +614,27 @@
 						: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
 					postDiag('request_seen', {
 						method,
-						host: getHost(url || rawInput),
-						pathShape: computePathShape(url || rawInput),
+						host: host || getHost(url || rawInput),
+						pathShape: pathShape || computePathShape(url || rawInput),
 						status: (typeof response?.status === 'number') ? response.status : 0,
 						'content-type': ct,
 						contentType: ct,
 						inputType,
 						input: inputType
 					});
+				}
+			} catch {
+				// ignore
+			}
+
+			// Diagnostic response scanners (JSON and Proto)
+			try {
+				if (isDebugActive() && response && typeof response.clone === 'function') {
+					const ct = (typeof response?.headers?.get === 'function'
+						? response.headers.get('content-type')
+						: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
+					scanJsonResponse(response, pathShape, host, pathname, ct);
+					scanBinaryResponse(response, pathShape, host, pathname, ct);
 				}
 			} catch {
 				// ignore
@@ -504,6 +789,27 @@
 				this.addEventListener('load', logXhrSeen);
 				this.addEventListener('error', logXhrSeen);
 				this.addEventListener('abort', logXhrSeen);
+			}
+
+			if (this.__cc_method === 'POST') {
+				try {
+					const targetUrl = this.__cc_url || this.__cc_raw_input;
+					const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+						? window.location.origin
+						: 'https://claude.ai';
+					const parsed = new URL(targetUrl, baseOrigin);
+					const pathname = parsed.pathname || '';
+					if (pathname.startsWith('/claudeai-rpc/')) {
+						const { bodyType, bodyByteLength } = inspectRequestBodyMeta(args[0]);
+						postDiag('rpc_request_meta', {
+							pathShape: computePathShape(targetUrl),
+							bodyType,
+							bodyByteLength
+						});
+					}
+				} catch {
+					// ignore
+				}
 			}
 
 			if (this.__cc_url) {
@@ -753,7 +1059,11 @@
 			toAbsoluteUrl,
 			getRequestInputType,
 			isCompletionRequestUrl,
-			shouldLogRequestSeen
+			shouldLogRequestSeen,
+			scanJsonResponse,
+			scanBinaryResponse,
+			inspectRequestBodyMeta,
+			walkJson
 		};
 	}
 })();

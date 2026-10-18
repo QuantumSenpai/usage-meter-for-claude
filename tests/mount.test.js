@@ -3192,6 +3192,323 @@ async function test(name, fn) {
 		assert.strictEqual(allXhrLogs[0].payload.data.pathShape, '/api/valid_xhr');
 	});
 
+	// Test 64: (a) nested JSON with "utilization": 0.9 => limit_key_seen logged, value never present in any posted message
+	await test('0.6.8 Test 64: (a) nested JSON with "utilization": 0.9 => limit_key_seen logged, value never present in any posted message', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const payload = {
+			account: {
+				tier: 'pro',
+				details: {
+					utilization: 0.9
+				}
+			}
+		};
+
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+			},
+			clone() {
+				return {
+					text: async () => JSON.stringify(payload)
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/account_limits');
+		await new Promise(r => setTimeout(r, 20));
+
+		const limitLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'limit_key_seen');
+		assert.ok(limitLog, 'limit_key_seen must be logged for utilization key');
+		assert.strictEqual(limitLog.payload.data.keyPath, 'account.details.utilization');
+		assert.strictEqual(limitLog.payload.data.valueType, 'number');
+
+		// Value privacy check: 0.9 must NOT appear anywhere in the posted messages
+		const allMessagesStr = JSON.stringify(postedMessages);
+		assert.strictEqual(allMessagesStr.includes('0.9'), false, 'Numeric value must NEVER appear in posted messages');
+	});
+
+	// Test 65: (b) JSON containing chat-like strings => nothing leaks
+	await test('0.6.8 Test 65: (b) JSON containing chat-like strings => nothing leaks', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const payload = {
+			chat_message: {
+				id: 'msg-123',
+				content: 'Sensitive private user conversation message text that should never leak.',
+				text: 'Another confidential prompt string.'
+			},
+			remaining_queries: 42
+		};
+
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+			},
+			clone() {
+				return {
+					text: async () => JSON.stringify(payload)
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/api/chat_conversations/22222222-2222-2222-2222-222222222222');
+		await new Promise(r => setTimeout(r, 20));
+
+		const limitLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'limit_key_seen');
+		assert.ok(limitLog, 'limit_key_seen must be logged for remaining_queries');
+		assert.strictEqual(limitLog.payload.data.keyPath, 'remaining_queries');
+		assert.strictEqual(limitLog.payload.data.valueType, 'number');
+
+		const allMessagesStr = JSON.stringify(postedMessages);
+		assert.strictEqual(allMessagesStr.includes('Sensitive'), false, 'Chat string must NOT leak');
+		assert.strictEqual(allMessagesStr.includes('confidential'), false, 'Chat string must NOT leak');
+		assert.strictEqual(allMessagesStr.includes('conversation message text'), false, 'Chat string must NOT leak');
+	});
+
+	// Test 66: (c) fake proto stream containing the bytes "five_hour" => proto_token_seen logged with count and offset
+	await test('0.6.8 Test 66: (c) fake proto stream containing bytes "five_hour" => proto_token_seen logged with count and offset', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Construct binary chunk: 10 arbitrary bytes + "five_hour" + 5 arbitrary bytes
+		const prefix = new Uint8Array([0x08, 0x96, 0x01, 0x12, 0x20, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]); // 10 bytes
+		const tokenBytes = new TextEncoder().encode('five_hour'); // 9 bytes
+		const suffix = new Uint8Array([0x18, 0x01, 0x20, 0x02, 0x28]); // 5 bytes
+		const combined = new Uint8Array(prefix.length + tokenBytes.length + suffix.length);
+		combined.set(prefix, 0);
+		combined.set(tokenBytes, prefix.length);
+		combined.set(suffix, prefix.length + tokenBytes.length);
+
+		let readCount = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readCount++;
+									if (readCount === 1) return { done: false, value: combined };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST',
+			body: new Uint8Array([1, 2, 3])
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		// Check rpc_request_meta
+		const metaLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'rpc_request_meta');
+		assert.ok(metaLog, 'rpc_request_meta must be logged for POST /claudeai-rpc/');
+		assert.strictEqual(metaLog.payload.data.bodyType, 'typedarray');
+		assert.strictEqual(metaLog.payload.data.bodyByteLength, 3);
+
+		// Check proto_token_seen
+		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen');
+		assert.ok(tokenLog, 'proto_token_seen must be logged for five_hour');
+		assert.strictEqual(tokenLog.payload.data.token, 'five_hour');
+		assert.strictEqual(tokenLog.payload.data.count, 1);
+		assert.strictEqual(tokenLog.payload.data.firstOffset, 10);
+
+		// Check proto_scan_done
+		const doneLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+		assert.ok(doneLog, 'proto_scan_done must be logged');
+		assert.strictEqual(doneLog.payload.data.reason, 'stream_end');
+		assert.strictEqual(doneLog.payload.data.bytesRead, combined.length);
+	});
+
+	// Test 67: (d) stream longer than the cap => proto_scan_done reason size_cap, clone reader cancelled
+	await test('0.6.8 Test 67: (d) stream longer than the cap => proto_scan_done reason size_cap, clone reader cancelled', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let cancelCalled = false;
+		let chunkYieldCount = 0;
+		// 64 KB chunk
+		const chunk64k = new Uint8Array(65536);
+
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									chunkYieldCount++;
+									// Yield 10 chunks of 64k (total 640k, well over 256k cap)
+									if (chunkYieldCount <= 10) return { done: false, value: chunk64k };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {
+									cancelCalled = true;
+								}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const doneLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+		assert.ok(doneLog, 'proto_scan_done must be logged');
+		assert.strictEqual(doneLog.payload.data.reason, 'size_cap');
+		assert.strictEqual(doneLog.payload.data.bytesRead, 262144);
+		assert.strictEqual(cancelCalled, true, 'Clone reader cancel must be called on reaching size_cap');
+	});
+
+	// Test 68: (e) cc_debug off => response.clone never called
+	await test('0.6.8 Test 68: (e) cc_debug off => response.clone never called', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'false');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let cloneCalled = false;
+		const makeSpyResponse = (ct) => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? ct : null)
+			},
+			clone() {
+				cloneCalled = true;
+				return this;
+			}
+		});
+
+		fakeWindow.fetch = async (url) => {
+			if (String(url).includes('proto')) return makeSpyResponse('application/connect+proto');
+			return makeSpyResponse('application/json');
+		};
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/account_limits');
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/test_proto');
+		await new Promise(r => setTimeout(r, 25));
+
+		assert.strictEqual(cloneCalled, false, 'response.clone() must NEVER be called when cc_debug is false');
+		const diagMsgs = postedMessages.filter(m => m.type === 'cc:diag');
+		assert.strictEqual(diagMsgs.length, 0, 'Zero diag messages when cc_debug is false');
+	});
+
+	// Test 69: (f) the page can still read the full original response body after inspection, including a long-lived stream
+	await test('0.6.8 Test 69: (f) page can still read full original response body after inspection', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+
+		// Real ReadableStream simulation for original body and clone
+		const chunkA = new TextEncoder().encode('chunk_A_five_hour_');
+		const chunkB = new TextEncoder().encode('chunk_B_data_');
+
+		class FakeStream {
+			constructor(chunks) {
+				this.chunks = [...chunks];
+				this.locked = false;
+			}
+			getReader() {
+				if (this.locked) throw new Error('ReadableStream is locked');
+				this.locked = true;
+				let idx = 0;
+				return {
+					read: async () => {
+						if (idx < this.chunks.length) return { done: false, value: this.chunks[idx++] };
+						return { done: true, value: undefined };
+					},
+					cancel: async () => {}
+				};
+			}
+		}
+
+		class FakeResponse {
+			constructor() {
+				this.status = 200;
+				this.ok = true;
+				this.headers = {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				};
+				this.body = new FakeStream([chunkA, chunkB]);
+			}
+			clone() {
+				const cloneResp = new FakeResponse();
+				cloneResp.body = new FakeStream([chunkA, chunkB]);
+				return cloneResp;
+			}
+		}
+
+		fakeWindow.fetch = async () => new FakeResponse();
+		bridge.wrapFetch(fakeWindow);
+
+		const response = await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline');
+
+		// Page reads original response body
+		const pageReader = response.body.getReader();
+		const p1 = await pageReader.read();
+		assert.strictEqual(p1.done, false);
+		assert.strictEqual(new TextDecoder().decode(p1.value), 'chunk_A_five_hour_');
+
+		const p2 = await pageReader.read();
+		assert.strictEqual(p2.done, false);
+		assert.strictEqual(new TextDecoder().decode(p2.value), 'chunk_B_data_');
+
+		const p3 = await pageReader.read();
+		assert.strictEqual(p3.done, true);
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();

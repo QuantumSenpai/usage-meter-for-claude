@@ -1,4 +1,38 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.7)
+# Testing Checklist: Usage Meter for Claude (v0.6.8)
+
+## Brave & Chrome Checklist (v0.6.8 Diagnostic Limit Scanners for Connect-RPC)
+
+### 1. RPC Request Metadata & Stream Scan Verification
+- **Preconditions:** Extension loaded in Brave or Chrome. Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. Enable debug mode in DevTools Console:
+     ```javascript
+     localStorage.setItem('cc_debug', 'true');
+     ```
+  2. Reload the page (`Cmd + Shift + R`).
+  3. Send a message in a conversation.
+  4. Click the debug clipboard icon in the panel header next to the gear.
+  5. Paste into an editor and inspect copied diagnostics.
+- **Expected Results:**
+  - `rpc_request_meta` entry logged for `POST /claudeai-rpc/...` with `pathShape`, `bodyType`, `bodyByteLength`. No request body content is logged.
+  - If connect-proto stream contains limit-related tokens, `proto_token_seen` is logged with `pathShape`, `token`, `count`, `firstOffset`.
+  - `proto_scan_done` is logged with `pathShape`, `bytesRead`, and `reason` (`size_cap`, `time_cap`, `stream_end`, `error`).
+  - No binary or text content leaked from the stream.
+  - The live conversation message stream completes normally and renders in the chat UI.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. JSON Limit Key Diagnostic Verification
+- **Preconditions:** Debug mode enabled (`localStorage.setItem('cc_debug', 'true')`).
+- **Steps:**
+  1. Navigate between conversations or trigger `/api/` endpoints.
+  2. Click the debug clipboard icon in the panel header next to the gear.
+  3. Search for `limit_key_seen` entries.
+- **Expected Results:**
+  - Any matching JSON keys under `/api/` log `pathShape`, `keyPath`, and `valueType` (`number`, `string`, `boolean`, `null`, `object`, `array`).
+  - Zero raw data values or text content present in the logs.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave & Chrome Checklist (v0.6.7 Strict Completion URL & Diagnostic Request Filtering)
 

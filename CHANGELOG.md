@@ -2,6 +2,27 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.8] - 2026-10-18
+
+### Diagnostic Limit Scanners (JSON & Binary Proto) for Connect-RPC
+- **Diagnostic Limit Key Scanner (`limit_key_seen`):**
+  - Actively inspects `claude.ai` JSON responses (`status: 200`, `pathname` starting `/api/`, `content-type: application/json`) using non-blocking cloned response text (`response.clone().text()`).
+  - Skips bodies larger than 200,000 characters.
+  - Deep-walks JSON trees up to depth 6 looking for limit-related keys matching `/limit|usage|utiliz|quota|remaining|reset|percent|severity|notice|banner/i`.
+  - Emits `limit_key_seen { pathShape, keyPath, valueType }` without ever logging or leaking data values or string contents.
+  - Capped at 40 entries per page load and deduplicated by `pathShape + keyPath`.
+- **Diagnostic Binary Proto Scanner (`proto_token_seen` & `proto_scan_done`):**
+  - Actively inspects `claude.ai` RPC and protobuf responses (`pathname` starting `/claudeai-rpc/` or `content-type` containing `proto`) using non-blocking cloned stream body reading (`response.clone().body.getReader()`).
+  - Caps streaming reads at 262,144 bytes (256 KB) or 15 seconds maximum, explicitly canceling only the cloned reader while leaving the webpage's original response body untouched and readable.
+  - Searches binary stream bytes for target ASCII tokens (`five_hour`, `seven_day`, `within_limit`, `utilization`, `message_limit`, `resets_at`, `rate_limit`, `usage_limit`).
+  - Emits `proto_token_seen { pathShape, token, count, firstOffset }` and `proto_scan_done { pathShape, bytesRead, reason }` (`size_cap`, `time_cap`, `stream_end`, `error`).
+  - Capped at 40 entries per page load.
+- **Diagnostic RPC Request Metadata (`rpc_request_meta`):**
+  - Emits `rpc_request_meta { pathShape, bodyType, bodyByteLength }` for POST requests to `/claudeai-rpc/` without inspecting or logging request body content.
+- **Zero Overhead & Zero Behavior Change:**
+  - All scanners are strictly disabled when `cc_debug` is off (`response.clone()` is never called, zero memory/CPU overhead).
+  - Webpage requests and stream reading are completely unaffected.
+
 ## [0.6.7] - 2026-10-18
 
 ### Strict Completion URL Matching & Diagnostic Request Filtering
