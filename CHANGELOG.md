@@ -2,6 +2,18 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.7.0] - 2026-10-18
+
+### Production Connect Stream Timeline Limits Extractor
+- **Production Connect-Frame Protobuf Limits Parsing (`extractConnectLimits`):**
+  - Added background Connect-frame limit extractor for `POST /claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline` in `src/injected/bridge.js`, operating independently of `cc_debug`.
+  - Incremental Connect envelope parsing across chunk boundaries with 5-byte header (`flags`, 4-byte big-endian `length`).
+  - Strict buffer management: buffers payloads only when uncompressed (`flags & 0x01 == 0`), non-end-stream (`flags & 0x02 == 0`), and `length <= 4096`. Oversized or compressed frames are skipped by byte counting without buffer allocation.
+  - Strict bounds-checked protobuf parser: max 10-byte varint, wire types 0/1/2 only, length bounds checks, unknown fields skipped, fixed64 little-endian double IEEE-754 decoding for utilization.
+  - Window validation: accepts `5h` and `7d` windows with integer `resets_at` (1,600,000,000 to 2,500,000,000) and finite `utilization >= 0`. Missing double fields omit the window and log `proto_limit_field_missing` (when debug is on).
+  - Emits standard `cc:message_limit` with payload `{ windows: { '5h': { utilization, resets_at }, '7d': { utilization, resets_at } } }` for seamless panel updates and `cc_last_limit:<orgId>` persistence across page reloads.
+  - Clones response stream in the background without blocking page request or locking original response body.
+
 ## [0.6.13] - 2026-10-18
 
 ### Diagnostic Connect Frame Hex Inspection

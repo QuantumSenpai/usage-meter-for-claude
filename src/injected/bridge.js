@@ -767,6 +767,309 @@
 		return { bodyType: typeof body, bodyByteLength: -1 };
 	}
 
+	// Production Connect-frame limit extractor and protobuf parser
+	function decodeProtoVarint(buf, offset, limit) {
+		let res = 0;
+		let shift = 0;
+		let i = offset;
+		let count = 0;
+		while (i < limit) {
+			if (count >= 10) return null;
+			const b = buf[i++];
+			count++;
+			res += (b & 0x7f) * Math.pow(2, shift);
+			if ((b & 0x80) === 0) return { val: res, next: i };
+			shift += 7;
+		}
+		return null;
+	}
+
+	function parseWindowMessage(buf, offset, end) {
+		let i = offset;
+		let name = null;
+		let resets_at = null;
+		let utilization = null;
+
+		while (i < end) {
+			const key = decodeProtoVarint(buf, i, end);
+			if (!key) return null;
+			i = key.next;
+			const fieldNum = Math.floor(key.val / 8);
+			const wireType = key.val & 7;
+			if (wireType > 2 || fieldNum === 0) return null;
+
+			if (fieldNum === 1 && wireType === 2) {
+				const len = decodeProtoVarint(buf, i, end);
+				if (!len) return null;
+				i = len.next;
+				if (i + len.val > end) return null;
+				name = new TextDecoder('utf-8').decode(buf.subarray(i, i + len.val));
+				i += len.val;
+			} else if (fieldNum === 2 && wireType === 2) {
+				const len = decodeProtoVarint(buf, i, end);
+				if (!len) return null;
+				i = len.next;
+				const metaEnd = i + len.val;
+				if (metaEnd > end) return null;
+				let j = i;
+				while (j < metaEnd) {
+					const mKey = decodeProtoVarint(buf, j, metaEnd);
+					if (!mKey) return null;
+					j = mKey.next;
+					const mField = Math.floor(mKey.val / 8);
+					const mWire = mKey.val & 7;
+					if (mWire > 2 || mField === 0) return null;
+
+					if (mField === 3 && mWire === 1) {
+						if (j + 8 > metaEnd) return null;
+						const view = new DataView(buf.buffer, buf.byteOffset + j, 8);
+						utilization = view.getFloat64(0, true);
+						j += 8;
+					} else if (mField === 2 && mWire === 2) {
+						const rLen = decodeProtoVarint(buf, j, metaEnd);
+						if (!rLen) return null;
+						j = rLen.next;
+						const rEnd = j + rLen.val;
+						if (rEnd > metaEnd) return null;
+						let k = j;
+						while (k < rEnd) {
+							const rKey = decodeProtoVarint(buf, k, rEnd);
+							if (!rKey) return null;
+							k = rKey.next;
+							const rField = Math.floor(rKey.val / 8);
+							const rWire = rKey.val & 7;
+							if (rWire > 2 || rField === 0) return null;
+							if (rField === 1 && rWire === 0) {
+								const rVal = decodeProtoVarint(buf, k, rEnd);
+								if (!rVal) return null;
+								resets_at = rVal.val;
+								k = rVal.next;
+							} else if (rWire === 0) {
+								const s = decodeProtoVarint(buf, k, rEnd);
+								if (!s) return null;
+								k = s.next;
+							} else if (rWire === 1) {
+								if (k + 8 > rEnd) return null;
+								k += 8;
+							} else if (rWire === 2) {
+								const sLen = decodeProtoVarint(buf, k, rEnd);
+								if (!sLen) return null;
+								k = sLen.next + sLen.val;
+								if (k > rEnd) return null;
+							}
+						}
+						j = rEnd;
+					} else if (mWire === 0) {
+						const s = decodeProtoVarint(buf, j, metaEnd);
+						if (!s) return null;
+						j = s.next;
+					} else if (mWire === 1) {
+						if (j + 8 > metaEnd) return null;
+						j += 8;
+					} else if (mWire === 2) {
+						const sLen = decodeProtoVarint(buf, j, metaEnd);
+						if (!sLen) return null;
+						j = sLen.next + sLen.val;
+						if (j > metaEnd) return null;
+					}
+				}
+				i = metaEnd;
+			} else if (wireType === 0) {
+				const s = decodeProtoVarint(buf, i, end);
+				if (!s) return null;
+				i = s.next;
+			} else if (wireType === 1) {
+				if (i + 8 > end) return null;
+				i += 8;
+			} else if (wireType === 2) {
+				const sLen = decodeProtoVarint(buf, i, end);
+				if (!sLen) return null;
+				i = sLen.next + sLen.val;
+				if (i > end) return null;
+			}
+		}
+		return { name, resets_at, utilization };
+	}
+
+	function parseProtoMessage(buf, offset, end, windows, missingWindows) {
+		let i = offset;
+		while (i < end) {
+			const key = decodeProtoVarint(buf, i, end);
+			if (!key) return false;
+			i = key.next;
+			const fieldNum = Math.floor(key.val / 8);
+			const wireType = key.val & 7;
+			if (wireType > 2 || fieldNum === 0) return false;
+
+			if (fieldNum === 13 && wireType === 2) {
+				const len = decodeProtoVarint(buf, i, end);
+				if (!len) return false;
+				i = len.next;
+				if (i + len.val > end) return false;
+				const win = parseWindowMessage(buf, i, i + len.val);
+				if (!win) return false;
+				if (win.name === '5h' || win.name === '7d') {
+					if (win.utilization === null || win.utilization === undefined) {
+						missingWindows.push(win.name);
+					} else if (
+						typeof win.utilization === 'number' &&
+						Number.isFinite(win.utilization) &&
+						win.utilization >= 0 &&
+						Number.isInteger(win.resets_at) &&
+						win.resets_at >= 1600000000 &&
+						win.resets_at <= 2500000000
+					) {
+						windows[win.name] = {
+							utilization: win.utilization,
+							resets_at: win.resets_at
+						};
+					}
+				}
+				i += len.val;
+			} else if ((fieldNum === 1 || fieldNum === 4) && wireType === 2) {
+				const len = decodeProtoVarint(buf, i, end);
+				if (!len) return false;
+				i = len.next;
+				if (i + len.val > end) return false;
+				const ok = parseProtoMessage(buf, i, i + len.val, windows, missingWindows);
+				if (!ok) return false;
+				i += len.val;
+			} else if (wireType === 0) {
+				const s = decodeProtoVarint(buf, i, end);
+				if (!s) return false;
+				i = s.next;
+			} else if (wireType === 1) {
+				if (i + 8 > end) return false;
+				i += 8;
+			} else if (wireType === 2) {
+				const sLen = decodeProtoVarint(buf, i, end);
+				if (!sLen) return false;
+				i = sLen.next + sLen.val;
+				if (i > end) return false;
+			}
+		}
+		return true;
+	}
+
+	function parseAndEmitProtoLimit(payloadBuf) {
+		try {
+			const windows = {};
+			const missingWindows = [];
+			const ok = parseProtoMessage(payloadBuf, 0, payloadBuf.length, windows, missingWindows);
+			if (!ok) return;
+
+			for (const missingName of missingWindows) {
+				postDiag('proto_limit_field_missing', { window: missingName });
+			}
+
+			const windowKeys = Object.keys(windows);
+			if (windowKeys.length > 0) {
+				post('cc:message_limit', { windows });
+				postDiag('proto_limit_parsed', { windows: windowKeys });
+			}
+		} catch {
+			// ignore any error
+		}
+	}
+
+	function extractConnectLimits(response) {
+		try {
+			if (!response || typeof response.clone !== 'function') return;
+			const clone = response.clone();
+			if (!clone || !clone.body || typeof clone.body.getReader !== 'function') return;
+			const reader = clone.body.getReader();
+
+			(async () => {
+				let state = 'HEADER';
+				const headerBuf = new Uint8Array(5);
+				let headerBytes = 0;
+				let flags = 0;
+				let frameLen = 0;
+				let payloadBuf = null;
+				let payloadBytes = 0;
+				let bytesToSkip = 0;
+
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						if (!value || value.length === 0) continue;
+
+						let chunkOffset = 0;
+						while (chunkOffset < value.length) {
+							if (state === 'HEADER') {
+								const needed = 5 - headerBytes;
+								const available = value.length - chunkOffset;
+								const toCopy = Math.min(needed, available);
+								headerBuf.set(value.subarray(chunkOffset, chunkOffset + toCopy), headerBytes);
+								headerBytes += toCopy;
+								chunkOffset += toCopy;
+
+								if (headerBytes === 5) {
+									flags = headerBuf[0];
+									frameLen = (headerBuf[1] * 16777216) + (headerBuf[2] << 16) + (headerBuf[3] << 8) + headerBuf[4];
+									const isCompressed = (flags & 0x01) !== 0;
+									const isEndStream = (flags & 0x02) !== 0;
+
+									if (!isCompressed && !isEndStream && frameLen >= 0 && frameLen <= 4096) {
+										if (frameLen > 0) {
+											state = 'PAYLOAD';
+											payloadBuf = new Uint8Array(frameLen);
+											payloadBytes = 0;
+										} else {
+											state = 'HEADER';
+											headerBytes = 0;
+										}
+									} else {
+										if (frameLen > 0) {
+											state = 'SKIP';
+											bytesToSkip = frameLen;
+										} else {
+											state = 'HEADER';
+											headerBytes = 0;
+										}
+									}
+								}
+							} else if (state === 'PAYLOAD') {
+								const needed = frameLen - payloadBytes;
+								const available = value.length - chunkOffset;
+								const toCopy = Math.min(needed, available);
+								payloadBuf.set(value.subarray(chunkOffset, chunkOffset + toCopy), payloadBytes);
+								payloadBytes += toCopy;
+								chunkOffset += toCopy;
+
+								if (payloadBytes === frameLen) {
+									try {
+										parseAndEmitProtoLimit(payloadBuf);
+									} catch {
+										// ignore
+									}
+									state = 'HEADER';
+									headerBytes = 0;
+									payloadBuf = null;
+								}
+							} else if (state === 'SKIP') {
+								const available = value.length - chunkOffset;
+								const toSkip = Math.min(bytesToSkip, available);
+								bytesToSkip -= toSkip;
+								chunkOffset += toSkip;
+
+								if (bytesToSkip === 0) {
+									state = 'HEADER';
+									headerBytes = 0;
+								}
+							}
+						}
+					}
+				} catch {
+					// stream read error, ignore
+				}
+			})().catch(() => {});
+		} catch {
+			// ignore
+		}
+	}
+
 	// 2. Wrap Fetch
 	let originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
 
@@ -928,6 +1231,15 @@
 							handleUsageResponse(orgId, response);
 						}
 					}
+				}
+			} catch {
+				// Never fail the page request
+			}
+
+			// Production Connect-frame limit extractor
+			try {
+				if (host === 'claude.ai' && (pathname.endsWith('/ConversationService/StreamTimeline') || pathname.endsWith('ConversationService/StreamTimeline'))) {
+					extractConnectLimits(response);
 				}
 			} catch {
 				// Never fail the page request
@@ -1311,7 +1623,12 @@
 			scanJsonResponse,
 			scanBinaryResponse,
 			inspectRequestBodyMeta,
-			walkJson
+			walkJson,
+			decodeProtoVarint,
+			parseWindowMessage,
+			parseProtoMessage,
+			parseAndEmitProtoLimit,
+			extractConnectLimits
 		};
 	}
 })();

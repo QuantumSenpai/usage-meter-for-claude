@@ -1,4 +1,20 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.13)
+# Testing Checklist: Usage Meter for Claude (v0.7.0)
+
+## Brave & Chrome Checklist (v0.7.0 Production Connect Timeline Limits)
+
+### 1. Connect StreamTimeline Limits Extraction (cc_debug OFF)
+- **Preconditions:** Extension loaded in Brave or Chrome. Open `https://claude.ai` with DevTools open. Ensure `cc_debug` is OFF (`localStorage.removeItem('cc_debug')`).
+- **Steps:**
+  1. Reload the page (`Cmd + Shift + R`).
+  2. Send a message in a conversation.
+  3. Observe the meter panel in the Claude UI.
+- **Expected Results:**
+  - After sending a message, the usage meter panel updates its session and weekly limits without requiring a full page refresh.
+  - Usage meter correctly reflects session percentage and reset countdown (e.g., 5h window) and weekly percentage and reset countdown (e.g., 7d window).
+  - The live conversation message stream completes normally with zero disruption or delay.
+  - Page reload preserves the limit in `cc_last_limit:<orgId>`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave & Chrome Checklist (v0.6.13 Diagnostic Frame Hex Inspection)
 

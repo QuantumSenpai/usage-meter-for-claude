@@ -1,0 +1,1 @@
+Payload from real Chrome log (Free plan), containing no personal data.
