@@ -2,6 +2,20 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.11] - 2026-10-18
+
+### Diagnostic Token Unredaction & Connect Frame ASCII Inspection
+- **Token Name Field Renamed (`proto_token_seen`):**
+  - Renamed diagnostic data field `token` to `needle` in `postDiag('proto_token_seen', { pathShape, needle, count, firstOffset, frameIndex })`.
+  - Prevents `sanitizeDebugData` redaction rule (`key.toLowerCase().includes('token')`) in `src/content/main.js` from redacting the token name to `[REDACTED_SECRET]`.
+- **Connect Frame ASCII Diagnostic (`proto_frame_text`):**
+  - Emits `proto_frame_text { pathShape, frameIndex, length, head8hex, frameAscii }` for Connect-RPC envelope frames that are uncompressed (`(flags & 0x01) === 0`), not end-stream (`(flags & 0x02) === 0`), have `length <= 512`, and whose payload contains at least one `PROTO_TOKENS` entry.
+  - Buffers candidate frame payloads across chunk boundaries up to 512 bytes.
+  - Generates `frameAscii` decoded as latin1 with non-printable bytes (outside `0x20`–`0x7E`) replaced by `.`, UUIDs masked as `[UUID]`, and emails masked as `[EMAIL]`, capped at 512 characters.
+  - Emits `head8hex` as the first 8 payload bytes formatted as lowercase hex.
+  - Enforces a hard limit of at most 5 `proto_frame_text` entries per page load. Never emits for compressed frames or frames over 512 bytes.
+  - Verified through the real redaction pipeline that neither `frameAscii` nor `head8hex` is mangled.
+
 ## [0.6.10] - 2026-10-18
 
 ### Incremental Per-Chunk Proto Token Scanning & Carry-Over Boundary Matching

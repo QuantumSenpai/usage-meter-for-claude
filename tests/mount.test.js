@@ -1910,6 +1910,7 @@ async function test(name, fn) {
 		if (!global.window.addEventListener) {
 			global.window.addEventListener = () => {};
 		}
+		delete global.window.__CC_BRIDGE_INSTALLED__;
 		global.window.__cc_fetch_wrapped__ = false;
 		global.window.localStorage = global.localStorage;
 		return { fakeWindow: global.window, postedMessages };
@@ -3340,7 +3341,7 @@ async function test(name, fn) {
 		// Check proto_token_seen
 		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen');
 		assert.ok(tokenLog, 'proto_token_seen must be logged for five_hour');
-		assert.strictEqual(tokenLog.payload.data.token, 'five_hour');
+		assert.strictEqual(tokenLog.payload.data.needle, 'five_hour');
 		assert.strictEqual(tokenLog.payload.data.count, 1);
 		assert.strictEqual(tokenLog.payload.data.firstOffset, 10);
 
@@ -3604,14 +3605,14 @@ async function test(name, fn) {
 			await new Promise(r => originalSetTimeout(r, 25));
 
 			// Token is found!
-			const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'within_limit');
+			const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.needle === 'within_limit');
 			assert.ok(tokenLog, 'proto_token_seen must be logged for token placed after 20 seconds');
-			assert.strictEqual(tokenLog.payload.data.token, 'within_limit');
+			assert.strictEqual(tokenLog.payload.data.needle, 'within_limit');
 			assert.strictEqual(tokenLog.payload.data.count, 1);
 			assert.strictEqual(tokenLog.payload.data.firstOffset, 8);
 			assert.strictEqual(tokenLog.payload.data.frameIndex, 0);
 			const keys = Object.keys(tokenLog.payload.data).sort();
-			assert.deepStrictEqual(keys, ['count', 'firstOffset', 'frameIndex', 'pathShape', 'token'].sort());
+			assert.deepStrictEqual(keys, ['count', 'firstOffset', 'frameIndex', 'needle', 'pathShape'].sort());
 		} finally {
 			global.setTimeout = originalSetTimeout;
 			global.clearTimeout = originalClearTimeout;
@@ -4037,9 +4038,9 @@ async function test(name, fn) {
 		assert.strictEqual(doneBefore, undefined, 'proto_scan_done must NOT be logged before stream ends');
 
 		// Verify proto_token_seen WAS logged for five_hour BEFORE stream ends!
-		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'five_hour');
+		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.needle === 'five_hour');
 		assert.ok(tokenLog, 'proto_token_seen must be logged BEFORE the stream ends');
-		assert.strictEqual(tokenLog.payload.data.token, 'five_hour');
+		assert.strictEqual(tokenLog.payload.data.needle, 'five_hour');
 		assert.strictEqual(tokenLog.payload.data.count, 1);
 		assert.strictEqual(tokenLog.payload.data.frameIndex, 2);
 
@@ -4048,7 +4049,7 @@ async function test(name, fn) {
 		await new Promise(r => setTimeout(r, 35));
 
 		// Stream has ended: check updated count
-		const tokenLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'five_hour');
+		const tokenLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.needle === 'five_hour');
 		assert.strictEqual(tokenLogs.length, 2, 'Initial log when first seen + final log with updated count');
 		assert.strictEqual(tokenLogs[1].payload.data.count, 2, 'Updated count must be 2');
 
@@ -4110,9 +4111,9 @@ async function test(name, fn) {
 		});
 		await new Promise(r => setTimeout(r, 25));
 
-		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'representativeClaim');
+		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.needle === 'representativeClaim');
 		assert.ok(tokenLog, 'proto_token_seen must find representativeClaim split across two chunks');
-		assert.strictEqual(tokenLog.payload.data.token, 'representativeClaim');
+		assert.strictEqual(tokenLog.payload.data.needle, 'representativeClaim');
 		assert.strictEqual(tokenLog.payload.data.count, 1);
 		assert.strictEqual(tokenLog.payload.data.firstOffset, 5);
 		assert.strictEqual(tokenLog.payload.data.frameIndex, 0);
@@ -4181,6 +4182,477 @@ async function test(name, fn) {
 
 		const r3 = await pageReader.read();
 		assert.strictEqual(r3.done, true);
+	});
+
+	// Test 79: 0.6.11 Task 2 - proto_token_seen passes through real main.js cc:diag handling and real redaction
+	await test('0.6.11 Task 2: proto_token_seen passes through real main.js cc:diag handling and redaction, needle survives', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0; // clear buffer
+
+		// Pass proto_token_seen diag with needle: 'five_hour'
+		const diagPayload = {
+			category: 'proto_token_seen',
+			data: {
+				pathShape: '/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline',
+				needle: 'five_hour',
+				count: 2,
+				firstOffset: 12473,
+				frameIndex: 28
+			}
+		};
+
+		bridgeListeners['cc:diag'](diagPayload);
+
+		const entry = buffer.find(e => e.category === 'proto_token_seen');
+		assert.ok(entry, 'proto_token_seen must be logged in real main.js debug buffer');
+		assert.strictEqual(entry.data.needle, 'five_hour', 'field "needle" must survive redaction with original token name');
+		assert.strictEqual(entry.data.token, undefined, 'field "token" must not exist');
+		assert.notStrictEqual(entry.data.needle, '[REDACTED_SECRET]', 'needle must NOT be redacted as [REDACTED_SECRET]');
+	});
+
+	// Test 80: 0.6.11 Task 3 (a) - uncompressed 119-byte frame with a token split across two chunks => one proto_frame_text with correct frameAscii and head8hex
+	await test('0.6.11 Test 80: (a) uncompressed 119-byte frame with a token split across two chunks => one proto_frame_text with correct frameAscii and head8hex', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Construct 119-byte frame:
+		// 5-byte header: flags=0 (uncompressed), length=119
+		// Payload: 119 bytes
+		// First 8 bytes of payload: 0x01, 0x02, 0x03, 0x04, 0x0a, 0x0b, 0x0c, 0x0d => head8hex = "010203040a0b0c0d"
+		// Payload contains token "within_limit" (12 bytes) split across chunks.
+		const payload = new Uint8Array(119);
+		payload.fill(0x2e); // '.' (0x2e)
+		payload.set([0x01, 0x02, 0x03, 0x04, 0x0a, 0x0b, 0x0c, 0x0d], 0);
+
+		// Place "within_limit" spanning chunk boundary (bytes 45..56)
+		const tokenBytes = new TextEncoder().encode('within_limit');
+		payload.set(tokenBytes, 45);
+
+		// Header: 5 bytes
+		const header = new Uint8Array([0, 0, 0, 0, 119]);
+
+		// Chunk 1: header + first 50 payload bytes = 55 bytes
+		const chunk1 = new Uint8Array(55);
+		chunk1.set(header, 0);
+		chunk1.set(payload.subarray(0, 50), 5);
+
+		// Chunk 2: remaining 69 payload bytes
+		const chunk2 = payload.subarray(50, 119);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk1 };
+									if (readStep === 2) return { done: false, value: chunk2 };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameTexts = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_text');
+		assert.strictEqual(frameTexts.length, 1, 'Exactly one proto_frame_text must be emitted');
+
+		const data = frameTexts[0].payload.data;
+		assert.strictEqual(data.frameIndex, 0);
+		assert.strictEqual(data.length, 119);
+		assert.strictEqual(data.head8hex, '010203040a0b0c0d');
+		assert.strictEqual(data.frameAscii.length, 119);
+		assert.ok(data.frameAscii.includes('within_limit'), 'frameAscii must contain the token');
+		assert.strictEqual(data.frameAscii.slice(0, 8), '........');
+
+		// Assert through the real main.js redaction pipeline
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+		bridgeListeners['cc:diag'](frameTexts[0].payload);
+		const sanitizedEntry = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(sanitizedEntry, 'Must be logged in real main.js debug buffer');
+		assert.strictEqual(sanitizedEntry.data.head8hex, '010203040a0b0c0d', 'head8hex must not be mangled');
+		assert.strictEqual(sanitizedEntry.data.frameAscii, data.frameAscii, 'frameAscii must not be mangled');
+	});
+
+	// Test 81: 0.6.11 Task 3 (b) - compressed frame containing a token => no proto_frame_text
+	await test('0.6.11 Test 81: (b) compressed frame containing a token => no proto_frame_text', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Compressed frame: flags = 1 (bit 0 set), length = 50
+		const header = new Uint8Array([1, 0, 0, 0, 50]);
+		const payload = new Uint8Array(50);
+		payload.set(new TextEncoder().encode('five_hour'), 10);
+
+		const chunk = new Uint8Array(55);
+		chunk.set(header, 0);
+		chunk.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameText = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_text');
+		assert.strictEqual(frameText, undefined, 'proto_frame_text must NOT be emitted for compressed frame');
+
+		const compressedLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_compressed_seen');
+		assert.ok(compressedLog, 'proto_compressed_seen must be emitted');
+	});
+
+	// Test 82: 0.6.11 Task 3 (c) - frame of 600 bytes with a token => none
+	await test('0.6.11 Test 82: (c) frame of 600 bytes with a token => none', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Frame length: 600 bytes (> 512)
+		const length = 600;
+		const header = new Uint8Array([0, 0, 0, (length >> 8) & 0xff, length & 0xff]);
+		const payload = new Uint8Array(length);
+		payload.set(new TextEncoder().encode('five_hour'), 10);
+
+		const chunk = new Uint8Array(5 + length);
+		chunk.set(header, 0);
+		chunk.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameText = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_text');
+		assert.strictEqual(frameText, undefined, 'proto_frame_text must NOT be emitted for frames > 512 bytes');
+	});
+
+	// Test 83: 0.6.11 Task 3 (d) - frame with a UUID and an email inside => both replaced
+	await test('0.6.11 Test 83: (d) frame with a UUID and an email inside => both replaced', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		const rawStr = 'token:five_hour;id:12345678-1234-4234-8234-123456789abc;contact:user@example.com;status:ok;';
+		const payload = new TextEncoder().encode(rawStr);
+		assert.ok(payload.length <= 512);
+
+		const header = new Uint8Array([0, 0, 0, 0, payload.length]);
+		const chunk = new Uint8Array(5 + payload.length);
+		chunk.set(header, 0);
+		chunk.set(payload, 5);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameText = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_text');
+		assert.ok(frameText, 'proto_frame_text must be emitted');
+
+		const { frameAscii, head8hex } = frameText.payload.data;
+		assert.ok(frameAscii.includes('[UUID]'), 'UUID must be replaced with [UUID]');
+		assert.strictEqual(frameAscii.includes('12345678-1234-4234-8234-123456789abc'), false, 'Raw UUID must not be present');
+		assert.ok(frameAscii.includes('[EMAIL]'), 'Email must be replaced with [EMAIL]');
+		assert.strictEqual(frameAscii.includes('user@example.com'), false, 'Raw email must not be present');
+
+		// Assert through the real main.js redaction pipeline
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+		const buffer = main._internal.getDebugLogBuffer();
+		buffer.length = 0;
+		bridgeListeners['cc:diag'](frameText.payload);
+		const sanitized = buffer.find(e => e.category === 'proto_frame_text');
+		assert.ok(sanitized, 'Must be logged in real main.js debug buffer');
+		assert.strictEqual(sanitized.data.head8hex, head8hex, 'head8hex must not be mangled by redaction');
+		assert.strictEqual(sanitized.data.frameAscii, frameAscii, 'frameAscii must not be mangled by redaction');
+		assert.notStrictEqual(sanitized.data.frameAscii, '[REDACTED_EMAIL]', 'frameAscii must not be redacted to [REDACTED_EMAIL]');
+		assert.notStrictEqual(sanitized.data.frameAscii, '[REDACTED_UUID]', 'frameAscii must not be redacted to [REDACTED_UUID]');
+	});
+
+	// Test 84: 0.6.11 Task 3 (e) - 6th matching frame => not emitted
+	await test('0.6.11 Test 84: (e) 6th matching frame => not emitted', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Construct 6 frames, each uncompressed, length 20, containing "five_hour"
+		const framePayload = new Uint8Array(20);
+		framePayload.fill(0x2e);
+		framePayload.set(new TextEncoder().encode('five_hour'), 0);
+
+		const singleFrame = new Uint8Array(25);
+		singleFrame[0] = 0; singleFrame[1] = 0; singleFrame[2] = 0; singleFrame[3] = 0; singleFrame[4] = 20;
+		singleFrame.set(framePayload, 5);
+
+		// Combine 6 frames
+		const combined = new Uint8Array(25 * 6);
+		for (let f = 0; f < 6; f++) {
+			combined.set(singleFrame, f * 25);
+		}
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: combined };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const frameTexts = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'proto_frame_text');
+		assert.strictEqual(frameTexts.length, 5, 'Exactly 5 proto_frame_text entries must be emitted (cap = 5)');
+	});
+
+	// Test 85: 0.6.11 Task 3 (f) - cc_debug off => nothing and response.clone never called
+	await test('0.6.11 Test 85: (f) cc_debug off => nothing and response.clone never called', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'false');
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		let cloneCalled = false;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				cloneCalled = true;
+				return { body: { getReader: () => {} } };
+			}
+		});
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		assert.strictEqual(cloneCalled, false, 'response.clone must NOT be called when cc_debug is off');
+		const diags = postedMessages.filter(m => m.type === 'cc:diag');
+		assert.strictEqual(diags.length, 0, 'No cc:diag messages must be posted when cc_debug is off');
+	});
+
+	// Test 86: 0.6.11 Task 3 (g) - original body still fully readable by the page
+	await test('0.6.11 Test 86: (g) original body still fully readable by the page', async () => {
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+		const { fakeWindow } = setupBridgeTestEnvironment();
+
+		delete require.cache[require.resolve('../src/injected/bridge.js')];
+		const bridge = require('../src/injected/bridge.js');
+
+		// Frame with token
+		const header = new Uint8Array([0, 0, 0, 0, 15]);
+		const payload = new Uint8Array(15);
+		payload.set(new TextEncoder().encode('within_limit'), 0);
+		const frame = new Uint8Array(20);
+		frame.set(header, 0);
+		frame.set(payload, 5);
+
+		class ReadableStreamSimulation {
+			constructor(chunks) {
+				this.chunks = [...chunks];
+				this.locked = false;
+			}
+			getReader() {
+				if (this.locked) throw new Error('ReadableStream is locked');
+				this.locked = true;
+				let idx = 0;
+				return {
+					read: async () => {
+						if (idx < this.chunks.length) return { done: false, value: this.chunks[idx++] };
+						return { done: true, value: undefined };
+					},
+					cancel: async () => {}
+				};
+			}
+		}
+
+		class ResponseSimulation {
+			constructor() {
+				this.status = 200;
+				this.ok = true;
+				this.headers = {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				};
+				this.body = new ReadableStreamSimulation([frame]);
+			}
+			clone() {
+				const c = new ResponseSimulation();
+				c.body = new ReadableStreamSimulation([frame]);
+				return c;
+			}
+		}
+
+		fakeWindow.fetch = async () => new ResponseSimulation();
+		fakeWindow.__cc_fetch_wrapped__ = false;
+		bridge.wrapFetch(fakeWindow);
+
+		const response = await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline');
+
+		const pageReader = response.body.getReader();
+		const r1 = await pageReader.read();
+		assert.strictEqual(r1.done, false);
+		assert.strictEqual(r1.value.length, 20);
+
+		const r2 = await pageReader.read();
+		assert.strictEqual(r2.done, true);
 	});
 
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);

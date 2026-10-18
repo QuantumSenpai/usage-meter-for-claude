@@ -291,6 +291,7 @@
 	const MAX_LIMIT_KEYS = 40;
 	const MAX_PROTO_TOKEN_LOGS = 80;
 	const MAX_PROTO_DONE_LOGS = 40;
+	const MAX_PROTO_FRAME_TEXT_LOGS = 5;
 	const MAX_PROTO_SCAN_BYTES = 262144; // 256 KB
 	const MAX_PROTO_SCAN_TIME_MS = 15000; // 15s
 	const STREAM_TIMELINE_MAX_BYTES = 1048576; // 1 MiB
@@ -300,6 +301,7 @@
 	const seenLimitKeys = new Set();
 	let protoTokenLogCount = 0;
 	let protoDoneLogCount = 0;
+	let protoFrameTextLogCount = 0;
 
 	function getValueType(val) {
 		if (val === null) return 'null';
@@ -386,7 +388,7 @@
 	async function scanBinaryResponse(response, pathShape, host, pathname, ct) {
 		try {
 			if (!isDebugActive()) return;
-			if (protoDoneLogCount >= MAX_PROTO_DONE_LOGS && protoTokenLogCount >= MAX_PROTO_TOKEN_LOGS) return;
+			if (protoDoneLogCount >= MAX_PROTO_DONE_LOGS && protoTokenLogCount >= MAX_PROTO_TOKEN_LOGS && protoFrameTextLogCount >= MAX_PROTO_FRAME_TEXT_LOGS) return;
 
 			const isProtoCt = Boolean(ct && ct.toLowerCase().includes('proto'));
 			const isRpcPath = host === 'claude.ai' && pathname.startsWith('/claudeai-rpc/');
@@ -422,6 +424,55 @@
 			let currentPayloadRemaining = 0;
 			let currentFrameStart = 0;
 
+			// Candidate frame payload buffer for proto_frame_text
+			let candidatePayloadBuf = null;
+			let candidatePayloadBytesRead = 0;
+			let candidateFrameIndex = -1;
+			let candidateFrameLength = 0;
+
+			function checkAndEmitFrameText(payload, frameIndex, length) {
+				let latin1 = '';
+				for (let j = 0; j < payload.length; j++) {
+					latin1 += String.fromCharCode(payload[j]);
+				}
+				const hasToken = PROTO_TOKENS.some(token => latin1.includes(token));
+				if (!hasToken) return;
+
+				if (protoFrameTextLogCount >= MAX_PROTO_FRAME_TEXT_LOGS) return;
+				protoFrameTextLogCount++;
+
+				const headLen = Math.min(8, payload.length);
+				let head8hex = '';
+				for (let j = 0; j < headLen; j++) {
+					head8hex += payload[j].toString(16).padStart(2, '0');
+				}
+
+				let frameAscii = '';
+				for (let j = 0; j < payload.length; j++) {
+					const b = payload[j];
+					if (b >= 0x20 && b <= 0x7E) {
+						frameAscii += String.fromCharCode(b);
+					} else {
+						frameAscii += '.';
+					}
+				}
+
+				frameAscii = frameAscii.replace(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g, '[UUID]');
+				frameAscii = frameAscii.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]+/g, '[EMAIL]');
+
+				if (frameAscii.length > 512) {
+					frameAscii = frameAscii.slice(0, 512);
+				}
+
+				postDiag('proto_frame_text', {
+					pathShape,
+					frameIndex,
+					length,
+					head8hex,
+					frameAscii
+				});
+			}
+
 			function processChunkForFrames(chunk) {
 				let i = 0;
 				while (i < chunk.length) {
@@ -453,6 +504,19 @@
 								}
 							}
 
+							const isCandidate = (flags & 0x01) === 0 && (flags & 0x02) === 0 && length <= 512 && protoFrameTextLogCount < MAX_PROTO_FRAME_TEXT_LOGS;
+							if (isCandidate && length > 0) {
+								candidatePayloadBuf = new Uint8Array(length);
+								candidatePayloadBytesRead = 0;
+								candidateFrameIndex = fIndex;
+								candidateFrameLength = length;
+							} else {
+								candidatePayloadBuf = null;
+								candidatePayloadBytesRead = 0;
+								candidateFrameIndex = -1;
+								candidateFrameLength = 0;
+							}
+
 							currentPayloadRemaining = length;
 							if (length === 0) {
 								parserState = 0;
@@ -464,12 +528,21 @@
 					} else {
 						const needed = currentPayloadRemaining;
 						const available = chunk.length - i;
-						if (available < needed) {
-							currentPayloadRemaining -= available;
-							i += available;
-						} else {
-							i += needed;
-							currentPayloadRemaining = 0;
+						const toRead = Math.min(needed, available);
+
+						if (candidatePayloadBuf) {
+							candidatePayloadBuf.set(chunk.subarray(i, i + toRead), candidatePayloadBytesRead);
+							candidatePayloadBytesRead += toRead;
+						}
+
+						currentPayloadRemaining -= toRead;
+						i += toRead;
+
+						if (currentPayloadRemaining === 0) {
+							if (candidatePayloadBuf) {
+								checkAndEmitFrameText(candidatePayloadBuf, candidateFrameIndex, candidateFrameLength);
+								candidatePayloadBuf = null;
+							}
 							parserState = 0;
 							currentFrameStart = (parsedFrames.length > 0) ? parsedFrames[parsedFrames.length - 1].end : (currentFrameStart + 5);
 						}
@@ -524,7 +597,7 @@
 									entry.initialLoggedCount = 1;
 									postDiag('proto_token_seen', {
 										pathShape,
-										token,
+										needle: token,
 										count: entry.count,
 										firstOffset: entry.firstOffset,
 										frameIndex: entry.frameIndex
@@ -633,7 +706,7 @@
 							protoTokenLogCount++;
 							postDiag('proto_token_seen', {
 								pathShape,
-								token,
+								needle: token,
 								count: entry.count,
 								firstOffset: entry.firstOffset,
 								frameIndex: entry.frameIndex
