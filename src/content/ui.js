@@ -756,6 +756,7 @@
 			};
 
 			this.dom = {};
+			this._lastPanelRenderState = null;
 		}
 
 		_loadSavedExpanded() {
@@ -784,6 +785,51 @@
 			}
 		}
 
+		_wrapSettings(settings) {
+			const self = this;
+			return new Proxy(settings, {
+				set(target, prop, value) {
+					if (prop === 'showContext' || prop === 'showCache') {
+						const row = prop === 'showContext' ? 'context' : 'cache';
+						const boolVal = Boolean(value);
+						if (target[prop] !== boolVal) {
+							if (self.onDebugLog) {
+								let caller = self._currentCaller || 'unknown';
+								if (caller === 'unknown') {
+									try {
+										const stack = (new Error()).stack || '';
+										const lines = stack.split('\n').map(l => l.trim()).filter(l => l.startsWith('at '));
+										const callerLine = lines[1] || lines[0] || '';
+										if (callerLine.includes('chkCtx') || callerLine.includes('chk-ctx')) {
+											caller = 'chk_ctx';
+										} else if (callerLine.includes('chkCache') || callerLine.includes('chk-cache')) {
+											caller = 'chk_cache';
+										} else if (callerLine.includes('resetDefaults')) {
+											caller = 'reset_defaults';
+										} else {
+											const match = callerLine.match(/at\s+([^\s]+)/);
+											caller = match ? match[1] : callerLine.slice(0, 50);
+										}
+									} catch {
+										// ignore
+									}
+								}
+								self.onDebugLog('row_visibility_changed', {
+									row,
+									visible: boolVal,
+									caller
+								});
+							}
+						}
+						target[prop] = boolVal;
+						return true;
+					}
+					target[prop] = value;
+					return true;
+				}
+			});
+		}
+
 		_loadSavedSettings() {
 			const defaults = {
 				preset: 'default',
@@ -794,11 +840,12 @@
 				opacity: 0.94,
 				showSession: true,
 				showWeekly: true,
-				showContext: false,
-				showCache: false,
+				showContext: true,
+				showCache: true,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000,
 				v060_migrated: true,
-				v061_migrated: true
+				v061_migrated: true,
+				v062_migrated: true
 			};
 			try {
 				const saved = localStorage.getItem('cc_settings');
@@ -807,10 +854,8 @@
 					if (parsed && typeof parsed === 'object') {
 						let needsSave = false;
 
-						// Migration 1: v060 migration (hide Context & Cache by default)
+						// Migration 1: v060 migration (legacy marker; never force-hide Context & Cache)
 						if (!parsed.v060_migrated) {
-							parsed.showContext = false;
-							parsed.showCache = false;
 							parsed.v060_migrated = true;
 							needsSave = true;
 						}
@@ -821,6 +866,18 @@
 							parsed.showWeekly = true;
 							parsed.v061_migrated = true;
 							needsSave = true;
+						}
+
+						// Migration 3: v062 migration: restore showContext and showCache to true for already-migrated profiles
+						if (!parsed.v062_migrated) {
+							parsed.showContext = true;
+							parsed.showCache = true;
+							parsed.v062_migrated = true;
+							needsSave = true;
+							if (this.onDebugLog) {
+								this.onDebugLog('row_visibility_changed', { row: 'context', visible: true, caller: 'migration_v062' });
+								this.onDebugLog('row_visibility_changed', { row: 'cache', visible: true, caller: 'migration_v062' });
+							}
 						}
 
 						// Key validation (a) and fallback per key:
@@ -860,7 +917,7 @@
 							parsed.contextWindow = Math.round(cw);
 						}
 
-						// 5. booleans validation
+						// 5. booleans validation (missing or non-boolean values default to true)
 						if (typeof parsed.showSession !== 'boolean') {
 							parsed.showSession = defaults.showSession;
 						}
@@ -868,10 +925,10 @@
 							parsed.showWeekly = defaults.showWeekly;
 						}
 						if (typeof parsed.showContext !== 'boolean') {
-							parsed.showContext = defaults.showContext;
+							parsed.showContext = true;
 						}
 						if (typeof parsed.showCache !== 'boolean') {
-							parsed.showCache = defaults.showCache;
+							parsed.showCache = true;
 						}
 
 						if (needsSave) {
@@ -882,13 +939,13 @@
 							}
 						}
 
-						return Object.assign(defaults, parsed);
+						return this._wrapSettings(Object.assign(defaults, parsed));
 					}
 				}
 			} catch {
 				// ignore corrupt JSON
 			}
-			return defaults;
+			return this._wrapSettings(defaults);
 		}
 
 		_saveSettings() {
@@ -918,13 +975,40 @@
 			} catch {
 				// ignore
 			}
-			this.onDebugLog('panel_render_state', {
-				showSession: Boolean(this.settings.showSession),
-				showWeekly: Boolean(this.settings.showWeekly),
-				showContext: Boolean(this.settings.showContext),
-				showCache: Boolean(this.settings.showCache),
+			ccKeys.sort();
+
+			const nextState = {
+				showSession: Boolean(this.settings?.showSession),
+				showWeekly: Boolean(this.settings?.showWeekly),
+				showContext: Boolean(this.settings?.showContext),
+				showCache: Boolean(this.settings?.showCache),
 				rowsInDom: Boolean(this.dom?.rowSession && this.dom?.rowWeekly),
 				keys: ccKeys
+			};
+
+			if (this._lastPanelRenderState) {
+				const prev = this._lastPanelRenderState;
+				if (
+					prev.showSession === nextState.showSession &&
+					prev.showWeekly === nextState.showWeekly &&
+					prev.showContext === nextState.showContext &&
+					prev.showCache === nextState.showCache &&
+					prev.rowsInDom === nextState.rowsInDom &&
+					prev.keys.length === nextState.keys.length &&
+					prev.keys.every((key, idx) => key === nextState.keys[idx])
+				) {
+					return;
+				}
+			}
+
+			this._lastPanelRenderState = nextState;
+			this.onDebugLog('panel_render_state', {
+				showSession: nextState.showSession,
+				showWeekly: nextState.showWeekly,
+				showContext: nextState.showContext,
+				showCache: nextState.showCache,
+				rowsInDom: nextState.rowsInDom,
+				keys: [...nextState.keys]
 			});
 		}
 
@@ -1255,7 +1339,9 @@
 			}
 			if (this.dom.chkCtx) {
 				this.dom.chkCtx.addEventListener('change', (e) => {
+					this._currentCaller = 'chk_ctx';
 					this.settings.showContext = e.target.checked;
+					this._currentCaller = null;
 					this._saveSettings();
 					this.applyThemeAndSettings();
 					if (this.onToggleContextOrCache) this.onToggleContextOrCache();
@@ -1263,7 +1349,9 @@
 			}
 			if (this.dom.chkCache) {
 				this.dom.chkCache.addEventListener('change', (e) => {
+					this._currentCaller = 'chk_cache';
 					this.settings.showCache = e.target.checked;
+					this._currentCaller = null;
 					this._saveSettings();
 					this.applyThemeAndSettings();
 					if (this.onToggleContextOrCache) this.onToggleContextOrCache();
@@ -1351,7 +1439,7 @@
 		}
 
 		resetDefaults() {
-			this.settings = {
+			this.settings = this._wrapSettings({
 				preset: 'default',
 				lowColor: PRESETS.default.low,
 				midColor: PRESETS.default.mid,
@@ -1360,12 +1448,17 @@
 				opacity: 0.94,
 				showSession: true,
 				showWeekly: true,
-				showContext: false,
-				showCache: false,
+				showContext: true,
+				showCache: true,
 				v060_migrated: true,
 				v061_migrated: true,
+				v062_migrated: true,
 				contextWindow: CC.CONST?.CONTEXT_WINDOW_TOKENS || 200000
-			};
+			});
+			if (this.onDebugLog) {
+				this.onDebugLog('row_visibility_changed', { row: 'context', visible: true, caller: 'reset_defaults' });
+				this.onDebugLog('row_visibility_changed', { row: 'cache', visible: true, caller: 'reset_defaults' });
+			}
 			this._saveSettings();
 			this.applyThemeAndSettings();
 			if (this.lastConversationData) {

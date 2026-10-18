@@ -2,6 +2,22 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.5] - 2026-10-18
+
+### Fix Context and Cache Row Visibility & Telemetry Noise
+- **Row Visibility Restoration & Guaranteed Default Display:**
+  - Context and Cache rows default to visible (`showContext: true`, `showCache: true`) on fresh installations and unconfigured profiles.
+  - Missing or non-boolean visibility values in saved settings strictly default to `true`.
+  - Visibility state may only be modified by the user toggling checkboxes in the Rows Visibility drawer or via "Reset Defaults". No runtime or migration logic may flip rows to false.
+- **One-Time Migration (`v062_migrated`):**
+  - Added one-time migration (`v062_migrated: true`) restoring `showContext: true` and `showCache: true` for all existing and previously migrated profiles.
+  - *Note:* This one-time migration restores rows to visible across existing profiles and overrides rows previously hidden on purpose; users who wish to hide them can uncheck them in the settings drawer and that choice will remain persisted.
+- **Deduplicated Render State Telemetry:**
+  - `panel_render_state` debug telemetry is now deduplicated, logging only when any rendered state values (`showSession`, `showWeekly`, `showContext`, `showCache`, `rowsInDom`, or `keys`) change.
+  - Eliminates debug ring buffer flooding caused by per-second timer countdown ticks.
+- **Row Visibility Change Diagnostics:**
+  - Added `row_visibility_changed { row, visible, caller }` debug logging to trace any caller mutating row visibility flags.
+
 ## [0.6.4] - 2026-10-18
 
 ### Fix ReferenceError on originalFetch in Bridge Message Handler

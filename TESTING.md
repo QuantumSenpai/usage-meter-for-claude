@@ -1,4 +1,66 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.3)
+# Testing Checklist: Usage Meter for Claude (v0.6.5)
+
+## Brave Checklist (v0.6.5 Context & Cache Row Visibility & Telemetry Fixes)
+
+### 1. Existing Profile Migration (Restoring Context & Cache Rows)
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. In DevTools Console, seed the exact problematic settings payload:
+     ```javascript
+     localStorage.setItem('cc_settings', JSON.stringify({
+       "preset":"default","lowColor":"#10b981","midColor":"#f59e0b","highColor":"#ef4444","accentColor":"#3b82f6","opacity":0.94,"showSession":true,"showWeekly":true,"showContext":false,"showCache":false,"v060_migrated":true,"v061_migrated":true,"contextWindow":200000
+     }));
+     ```
+  2. Reload the page (`Cmd + Shift + R`).
+- **Expected Results:**
+  - Panel mounts with **Context** and **Cache** rows visible (not hidden with `.cc-hidden`).
+  - Open settings drawer: both **Context** and **Cache** checkboxes are checked.
+  - In DevTools Console, check `JSON.parse(localStorage.getItem('cc_settings'))`:
+    `showContext: true`, `showCache: true`, `v062_migrated: true`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. Fresh Profile First-Load Verification
+- **Preconditions:** Extension loaded. Open `https://claude.ai`.
+- **Steps:**
+  1. In DevTools Console, clear stored extension settings:
+     ```javascript
+     localStorage.removeItem('cc_settings');
+     ```
+  2. Open any conversation chat URL (`https://claude.ai/chat/<id>`).
+- **Expected Results:**
+  - Panel renders with all 4 rows visible: **Session (5h)**, **Weekly (7d)**, **Context**, and **Cache**.
+  - No rows are hidden.
+  - Settings drawer shows all 4 row checkboxes checked.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 3. User Unchecking Row Stays Persisted Across Reloads
+- **Preconditions:** Extension loaded on `https://claude.ai`.
+- **Steps:**
+  1. Open settings drawer (gear icon).
+  2. In "Rows Visibility", uncheck **Context**.
+  3. Verify Context row immediately disappears.
+  4. Reload the page.
+- **Expected Results:**
+  - Context row remains hidden after page reload.
+  - Cache, Session, and Weekly rows remain visible.
+  - One-time migration does NOT re-enable Context because `v062_migrated` is already `true`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 4. Telemetry Deduplication (No 1-Second Ring Buffer Flooding)
+- **Preconditions:** Enable debug mode in localStorage (`localStorage.setItem('cc_debug', 'true')`).
+- **Steps:**
+  1. Reload page and wait 15 seconds on a chat page.
+  2. Click the debug copy button in the settings drawer.
+  3. Inspect copied log entries for `panel_render_state`.
+- **Expected Results:**
+  - `panel_render_state` is logged only once on startup (or when values change).
+  - Ring buffer does NOT contain 15 identical `panel_render_state` entries flooding the buffer.
+  - Unchecking a row in settings drawer emits `row_visibility_changed` with caller label (`chk_ctx` / `chk_cache`) followed by a single updated `panel_render_state`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave Checklist (v0.6.3 Stream Interception & Transport Diagnostics)
 
