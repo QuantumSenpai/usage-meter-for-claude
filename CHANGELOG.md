@@ -2,6 +2,16 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.10] - 2026-10-18
+
+### Incremental Per-Chunk Proto Token Scanning & Carry-Over Boundary Matching
+- **Incremental Proto Token Search (`proto_token_seen`):**
+  - Searches binary protobuf and Connect-RPC stream chunks incrementally as each chunk arrives, rather than waiting until the entire stream read loop ends.
+  - Maintains a carry-over tail of 18 bytes (`longest token length - 1`, where `representativeClaim` is 19 bytes) across chunk boundaries so tokens split across chunks are reliably detected and mapped to their stream offset.
+  - Emits `proto_token_seen { pathShape, token, count, firstOffset, frameIndex }` immediately the first time each token is observed in an active, still-open stream with the count observed at that moment.
+  - If the token's count increases across subsequent chunks of the stream, emits an updated `proto_token_seen` with the final total count when the scan terminates.
+  - Leaves `proto_scan_done`, all per-page logging caps, deduplication, and clone-only reading completely untouched.
+
 ## [0.6.9] - 2026-10-18
 
 ### Extended StreamTimeline Scanning, Connect Frame Metadata & Expanded Token Set

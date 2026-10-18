@@ -3971,6 +3971,218 @@ async function test(name, fn) {
 		assert.strictEqual(diagMsgs.length, 0, 'Zero diag messages when cc_debug is false');
 	});
 
+	// Test 76: (a) token appearing in chunk 3 of a still-open fake stream is logged BEFORE the stream ends
+	await test('0.6.10 Test 76: (a) token appearing in chunk 3 of a still-open fake stream is logged BEFORE the stream ends', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Construct 3 Connect frames:
+		// Frame 0: 5 bytes header + 10 bytes payload
+		const frame0 = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x0A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		// Frame 1: 5 bytes header + 10 bytes payload
+		const frame1 = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x0A, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+		// Frame 2: 5 bytes header + payload containing "five_hour"
+		const tokenBytes = new TextEncoder().encode('five_hour'); // 9 bytes
+		const frame2 = new Uint8Array(5 + tokenBytes.length);
+		frame2[0] = 0;
+		frame2[1] = 0; frame2[2] = 0; frame2[3] = 0; frame2[4] = tokenBytes.length;
+		frame2.set(tokenBytes, 5);
+
+		let readStep = 0;
+		let deliverChunk4;
+		const chunk4Promise = new Promise(resolve => { deliverChunk4 = resolve; });
+
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: frame0 };
+									if (readStep === 2) return { done: false, value: frame1 };
+									if (readStep === 3) return { done: false, value: frame2 };
+									if (readStep === 4) return await chunk4Promise;
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+
+		// Wait for chunks 1, 2, 3 to be read by the loop
+		await new Promise(r => setTimeout(r, 35));
+
+		// STREAM IS STILL OPEN! Chunk 4 has NOT been delivered!
+		// Verify proto_scan_done has NOT been logged
+		const doneBefore = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+		assert.strictEqual(doneBefore, undefined, 'proto_scan_done must NOT be logged before stream ends');
+
+		// Verify proto_token_seen WAS logged for five_hour BEFORE stream ends!
+		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'five_hour');
+		assert.ok(tokenLog, 'proto_token_seen must be logged BEFORE the stream ends');
+		assert.strictEqual(tokenLog.payload.data.token, 'five_hour');
+		assert.strictEqual(tokenLog.payload.data.count, 1);
+		assert.strictEqual(tokenLog.payload.data.frameIndex, 2);
+
+		// Now deliver chunk 4 with another five_hour and end stream
+		deliverChunk4({ done: false, value: frame2 });
+		await new Promise(r => setTimeout(r, 35));
+
+		// Stream has ended: check updated count
+		const tokenLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'five_hour');
+		assert.strictEqual(tokenLogs.length, 2, 'Initial log when first seen + final log with updated count');
+		assert.strictEqual(tokenLogs[1].payload.data.count, 2, 'Updated count must be 2');
+
+		const doneAfter = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_scan_done');
+		assert.ok(doneAfter, 'proto_scan_done must be logged after stream ends');
+	});
+
+	// Test 77: (b) a token split across two chunks is found
+	await test('0.6.10 Test 77: (b) a token split across two chunks is found', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		// Token to split: "representativeClaim" (19 bytes)
+		// Frame: 5 bytes header + 19 bytes payload = 24 bytes total
+		// Chunk 1: 5 bytes header + "representative" (14 bytes)
+		// Chunk 2: "Claim" (5 bytes) + 10 bytes padding
+		const part1 = new TextEncoder().encode('representative'); // 14 bytes
+		const part2 = new TextEncoder().encode('Claim'); // 5 bytes
+		const chunk1 = new Uint8Array(5 + part1.length);
+		chunk1[0] = 0; chunk1[1] = 0; chunk1[2] = 0; chunk1[3] = 0; chunk1[4] = 19;
+		chunk1.set(part1, 5);
+
+		const chunk2 = new Uint8Array(part2.length + 10);
+		chunk2.set(part2, 0);
+
+		let readStep = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+			},
+			clone() {
+				return {
+					body: {
+						getReader() {
+							return {
+								read: async () => {
+									readStep++;
+									if (readStep === 1) return { done: false, value: chunk1 };
+									if (readStep === 2) return { done: false, value: chunk2 };
+									return { done: true, value: undefined };
+								},
+								cancel: async () => {}
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline', {
+			method: 'POST'
+		});
+		await new Promise(r => setTimeout(r, 25));
+
+		const tokenLog = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'proto_token_seen' && m.payload.data.token === 'representativeClaim');
+		assert.ok(tokenLog, 'proto_token_seen must find representativeClaim split across two chunks');
+		assert.strictEqual(tokenLog.payload.data.token, 'representativeClaim');
+		assert.strictEqual(tokenLog.payload.data.count, 1);
+		assert.strictEqual(tokenLog.payload.data.firstOffset, 5);
+		assert.strictEqual(tokenLog.payload.data.frameIndex, 0);
+	});
+
+	// Test 78: (c) original body stays readable
+	await test('0.6.10 Test 78: (c) original body stays readable while incremental token search runs', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow } = setupBridgeTestEnvironment();
+
+		const chunk1 = new TextEncoder().encode('chunk_1_overage_');
+		const chunk2 = new TextEncoder().encode('chunk_2_resets_at_');
+
+		class ReadableStreamSimulation {
+			constructor(chunks) {
+				this.chunks = [...chunks];
+				this.locked = false;
+			}
+			getReader() {
+				if (this.locked) throw new Error('ReadableStream is locked');
+				this.locked = true;
+				let idx = 0;
+				return {
+					read: async () => {
+						if (idx < this.chunks.length) return { done: false, value: this.chunks[idx++] };
+						return { done: true, value: undefined };
+					},
+					cancel: async () => {}
+				};
+			}
+		}
+
+		class ResponseSimulation {
+			constructor() {
+				this.status = 200;
+				this.ok = true;
+				this.headers = {
+					get: (name) => (name.toLowerCase() === 'content-type' ? 'application/connect+proto' : null)
+				};
+				this.body = new ReadableStreamSimulation([chunk1, chunk2]);
+			}
+			clone() {
+				const c = new ResponseSimulation();
+				c.body = new ReadableStreamSimulation([chunk1, chunk2]);
+				return c;
+			}
+		}
+
+		fakeWindow.fetch = async () => new ResponseSimulation();
+		bridge.wrapFetch(fakeWindow);
+
+		const response = await fakeWindow.fetch('https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline');
+
+		const pageReader = response.body.getReader();
+		const r1 = await pageReader.read();
+		assert.strictEqual(r1.done, false);
+		assert.strictEqual(new TextDecoder().decode(r1.value), 'chunk_1_overage_');
+
+		const r2 = await pageReader.read();
+		assert.strictEqual(r2.done, false);
+		assert.strictEqual(new TextDecoder().decode(r2.value), 'chunk_2_resets_at_');
+
+		const r3 = await pageReader.read();
+		assert.strictEqual(r3.done, true);
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();

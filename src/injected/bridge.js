@@ -477,6 +477,83 @@
 				}
 			}
 
+			// Incremental token scanner state
+			const MAX_TOKEN_LEN = 19; // 'representativeClaim'.length
+			const TAIL_LEN = MAX_TOKEN_LEN - 1; // 18
+			let prevTail = new Uint8Array(0);
+			const streamTokens = new Map(); // token -> { count, firstOffset, frameIndex, loggedInitial, initialLoggedCount }
+			const incremental = true;
+
+			function processChunkForTokens(chunk, chunkOffset) {
+				const prevTailLen = prevTail.length;
+				const searchBuf = new Uint8Array(prevTailLen + chunk.length);
+				if (prevTailLen > 0) {
+					searchBuf.set(prevTail, 0);
+				}
+				searchBuf.set(chunk, prevTailLen);
+
+				const bufStartOffset = chunkOffset - prevTailLen;
+				const text = new TextDecoder('latin1').decode(searchBuf);
+
+				for (const token of PROTO_TOKENS) {
+					let pos = 0;
+					while ((pos = text.indexOf(token, pos)) !== -1) {
+						if (pos + token.length > prevTailLen) {
+							const absOffset = bufStartOffset + pos;
+							let entry = streamTokens.get(token);
+							if (!entry) {
+								let matchedFrameIndex = -1;
+								for (const f of parsedFrames) {
+									if (absOffset >= f.start && absOffset < f.end) {
+										matchedFrameIndex = f.frameIndex;
+										break;
+									}
+								}
+								entry = {
+									count: 1,
+									firstOffset: absOffset,
+									frameIndex: matchedFrameIndex,
+									loggedInitial: false,
+									initialLoggedCount: 0
+								};
+								streamTokens.set(token, entry);
+
+								if (protoTokenLogCount < MAX_PROTO_TOKEN_LOGS) {
+									protoTokenLogCount++;
+									entry.loggedInitial = true;
+									entry.initialLoggedCount = 1;
+									postDiag('proto_token_seen', {
+										pathShape,
+										token,
+										count: entry.count,
+										firstOffset: entry.firstOffset,
+										frameIndex: entry.frameIndex
+									});
+								}
+							} else {
+								entry.count++;
+								if (entry.frameIndex === -1) {
+									for (const f of parsedFrames) {
+										if (entry.firstOffset >= f.start && entry.firstOffset < f.end) {
+											entry.frameIndex = f.frameIndex;
+											break;
+										}
+									}
+								}
+							}
+						}
+						pos += token.length;
+					}
+				}
+
+				if (chunk.length >= TAIL_LEN) {
+					prevTail = chunk.slice(chunk.length - TAIL_LEN);
+				} else {
+					const start = Math.max(0, searchBuf.length - TAIL_LEN);
+					prevTail = searchBuf.slice(start);
+				}
+			}
+
 			const timer = setTimeout(() => {
 				timedOut = true;
 				try {
@@ -509,17 +586,16 @@
 
 					if (value && value.length > 0) {
 						const remaining = maxBytes - totalBytes;
+						const chunkToScan = value.length >= remaining ? value.subarray(0, remaining) : value;
+						chunks.push(chunkToScan);
+						processChunkForFrames(chunkToScan);
+						if (incremental) {
+							processChunkForTokens(chunkToScan, totalBytes);
+						}
+						totalBytes += chunkToScan.length;
 						if (value.length >= remaining) {
-							const slice = value.subarray(0, remaining);
-							chunks.push(slice);
-							processChunkForFrames(slice);
-							totalBytes += remaining;
 							reason = 'size_cap';
 							break;
-						} else {
-							chunks.push(value);
-							processChunkForFrames(value);
-							totalBytes += value.length;
 						}
 					}
 				}
@@ -532,41 +608,37 @@
 				}
 			}
 
-			if (totalBytes > 0) {
-				const fullBuffer = new Uint8Array(totalBytes);
-				let offset = 0;
+			if (!incremental) {
+				let off = 0;
 				for (const chunk of chunks) {
-					fullBuffer.set(chunk, offset);
-					offset += chunk.length;
+					processChunkForTokens(chunk, off);
+					off += chunk.length;
 				}
+			}
 
-				const text = new TextDecoder('latin1').decode(fullBuffer);
-				for (const token of PROTO_TOKENS) {
-					if (protoTokenLogCount >= MAX_PROTO_TOKEN_LOGS) break;
-					let count = 0;
-					let firstOffset = -1;
-					let pos = 0;
-					while ((pos = text.indexOf(token, pos)) !== -1) {
-						if (firstOffset === -1) firstOffset = pos;
-						count++;
-						pos += token.length;
-					}
-					if (count > 0 && protoTokenLogCount < MAX_PROTO_TOKEN_LOGS) {
-						protoTokenLogCount++;
-						let matchedFrameIndex = -1;
+			if (streamTokens.size > 0) {
+				for (const [token, entry] of streamTokens) {
+					if (entry.frameIndex === -1) {
 						for (const f of parsedFrames) {
-							if (firstOffset >= f.start && firstOffset < f.end) {
-								matchedFrameIndex = f.frameIndex;
+							if (entry.firstOffset >= f.start && entry.firstOffset < f.end) {
+								entry.frameIndex = f.frameIndex;
 								break;
 							}
 						}
-						postDiag('proto_token_seen', {
-							pathShape,
-							token,
-							count,
-							firstOffset,
-							frameIndex: matchedFrameIndex
-						});
+					}
+
+					// Log again with updated count only when scan ends
+					if (entry.count > entry.initialLoggedCount || !entry.loggedInitial) {
+						if (protoTokenLogCount < MAX_PROTO_TOKEN_LOGS) {
+							protoTokenLogCount++;
+							postDiag('proto_token_seen', {
+								pathShape,
+								token,
+								count: entry.count,
+								firstOffset: entry.firstOffset,
+								frameIndex: entry.frameIndex
+							});
+						}
 					}
 				}
 			}
