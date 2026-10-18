@@ -1,4 +1,48 @@
-# Testing Checklist: Usage Meter for Claude (v0.6.6)
+# Testing Checklist: Usage Meter for Claude (v0.6.7)
+
+## Brave & Chrome Checklist (v0.6.7 Strict Completion URL & Diagnostic Request Filtering)
+
+### 1. Page Load Stream End Verification (No False-Positive `stream_end`)
+- **Preconditions:** Extension loaded in Brave (or Chrome). Open `https://claude.ai` with DevTools open.
+- **Steps:**
+  1. Enable debug mode in DevTools Console:
+     ```javascript
+     localStorage.setItem('cc_debug', 'true');
+     ```
+  2. Reload the page (`Cmd + Shift + R`) without sending any messages.
+  3. Click the debug clipboard icon in the panel header next to the gear (or run `__CC_COPY_DEBUG_LOG()` in Console).
+  4. Inspect the copied JSON logs.
+- **Expected Results:**
+  - `stream_end` does NOT appear in the log on page load.
+  - `assets-proxy.anthropic.com` static assets (such as `completionGzipWorker-*.js`) do NOT trigger `cc:generation_start`, `stream_end`, or `handleEventStream`.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 2. Request Diagnostics Filtering Verification
+- **Preconditions:** Debug mode enabled (`localStorage.setItem('cc_debug', 'true')`).
+- **Steps:**
+  1. Browse conversations and trigger API requests.
+  2. Click the debug clipboard icon in the panel header next to the gear.
+  3. Inspect `request_seen` entries in the copied JSON.
+- **Expected Results:**
+  - `request_seen` entries ONLY appear for requests whose paths start with `/api/`, `/claudeai-rpc/`, or `/edge-api/`.
+  - Zero `request_seen` entries for host `assets-proxy.anthropic.com`.
+  - Zero `request_seen` entries for static JS scripts, images, CSS, or page navigations (e.g. `/chat/...`).
+  - Required fields present on all entries: `method`, `host`, `pathShape`, `status`, `content-type`, `contentType`, `inputType`, `input`.
+  - Buffer capped at 200 entries max.
+- **Result:**
+  - [ ] Pass  [ ] Fail
+
+### 3. Normal Completion & Message Limit Flow
+- **Preconditions:** Active conversation on `https://claude.ai`.
+- **Steps:**
+  1. Send a chat message.
+  2. Observe panel during generation and upon completion.
+- **Expected Results:**
+  - Completion stream is intercepted and token counts / metrics update correctly.
+  - Session and Weekly usage bars update when message limits are received.
+- **Result:**
+  - [ ] Pass  [ ] Fail
 
 ## Brave & Chrome Checklist (v0.6.6 Context & Cache Default Off and Request Diagnostics)
 

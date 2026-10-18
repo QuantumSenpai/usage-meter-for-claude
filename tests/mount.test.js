@@ -2873,6 +2873,325 @@ async function test(name, fn) {
 		assert.strictEqual(hasNew, true, 'Newest entry must be present');
 	});
 
+	// Test 59: (a) completionGzipWorker asset URL => no cc:generation_start, no stream_end, no handleEventStream
+	await test('0.6.7 Test 59: (a) completionGzipWorker asset URL => no cc:generation_start, no stream_end, no handleEventStream', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		const { main, bridgeListeners } = setupRealMainEnvironment();
+
+		// Forward bridge postMessage events to main content script bridgeListeners
+		const oldPost = fakeWindow.postMessage;
+		fakeWindow.postMessage = (msg) => {
+			oldPost(msg);
+			if (msg && msg.cc === 'ClaudeCounter' && msg.type) {
+				if (bridgeListeners[msg.type]) {
+					bridgeListeners[msg.type](msg.payload);
+				}
+			}
+		};
+
+		let handleEventStreamBodyRead = false;
+		const assetResponse = {
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'text/javascript' : null)
+			},
+			clone() {
+				return {
+					status: 200,
+					ok: true,
+					headers: this.headers,
+					body: {
+						getReader() {
+							handleEventStreamBodyRead = true;
+							return {
+								read: async () => ({ done: true, value: undefined })
+							};
+						}
+					}
+				};
+			}
+		};
+
+		fakeWindow.fetch = async () => assetResponse;
+		bridge.wrapFetch(fakeWindow);
+
+		const assetUrl = 'https://assets-proxy.anthropic.com/claude-ai/v2/assets/completionGzipWorker-Q_JtDKxH.js';
+
+		// 1. GET request (simulating page load fetching the asset)
+		await fakeWindow.fetch(assetUrl, { method: 'GET' });
+		await new Promise(r => setTimeout(r, 20));
+
+		// 2. POST request (testing completion_start guard)
+		await fakeWindow.fetch(assetUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+
+		// Assertions:
+		const genStart = postedMessages.find(m => m.type === 'cc:generation_start');
+		assert.strictEqual(genStart, undefined, 'Must NOT post cc:generation_start for completionGzipWorker asset URL');
+
+		const streamCompleted = postedMessages.find(m => m.type === 'cc:stream_completed');
+		assert.strictEqual(streamCompleted, undefined, 'Must NOT post cc:stream_completed for completionGzipWorker asset URL');
+
+		assert.strictEqual(handleEventStreamBodyRead, false, 'Must NOT invoke handleEventStream on completionGzipWorker asset URL');
+
+		const debugLogs = JSON.parse(globalThis.__CC_COPY_DEBUG_LOG ? globalThis.__CC_COPY_DEBUG_LOG() : '[]');
+		const streamEndLog = debugLogs.find(e => e.category === 'stream_end');
+		assert.strictEqual(streamEndLog, undefined, 'stream_end must NOT fire on completionGzipWorker asset URL');
+	});
+
+	// Test 60: (b) real completion URL with and without query string => still treated as completion
+	await test('0.6.7 Test 60: (b) real completion URL with and without query string => still treated as completion', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let streamReads = 0;
+		const makeCompletionResponse = () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+			},
+			clone() {
+				return {
+					status: 200,
+					ok: true,
+					headers: this.headers,
+					body: {
+						getReader() {
+							streamReads++;
+							return {
+								read: async () => ({ done: true, value: undefined })
+							};
+						}
+					}
+				};
+			}
+		});
+
+		fakeWindow.fetch = async () => makeCompletionResponse();
+		bridge.wrapFetch(fakeWindow);
+
+		const baseUrl = 'https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/chat_conversations/22222222-2222-2222-2222-222222222222/completion';
+		const queryUrl = `${baseUrl}?tree=true&rendering_mode=messages`;
+
+		// 1. Without query string
+		await fakeWindow.fetch(baseUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+		const genStart1 = postedMessages.filter(m => m.type === 'cc:generation_start');
+		assert.strictEqual(genStart1.length, 1, 'cc:generation_start must be emitted for completion URL without query string');
+		assert.strictEqual(streamReads, 1, 'handleEventStream must be invoked for completion URL without query string');
+
+		// 2. With query string
+		await fakeWindow.fetch(queryUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+		const genStart2 = postedMessages.filter(m => m.type === 'cc:generation_start');
+		assert.strictEqual(genStart2.length, 2, 'cc:generation_start must be emitted for completion URL with query string');
+		assert.strictEqual(streamReads, 2, 'handleEventStream must be invoked for completion URL with query string');
+	});
+
+	// Test 61: (c) retry_completion same
+	await test('0.6.7 Test 61: (c) retry_completion URL with and without query string => still treated as completion', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let streamReads = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+			},
+			clone() {
+				return {
+					status: 200,
+					ok: true,
+					headers: this.headers,
+					body: {
+						getReader() {
+							streamReads++;
+							return {
+								read: async () => ({ done: true, value: undefined })
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		const baseUrl = 'https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/chat_conversations/22222222-2222-2222-2222-222222222222/retry_completion';
+		const queryUrl = `${baseUrl}?tree=true`;
+
+		// 1. Without query string
+		await fakeWindow.fetch(baseUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+		assert.strictEqual(postedMessages.filter(m => m.type === 'cc:generation_start').length, 1, 'cc:generation_start emitted for retry_completion without query');
+		assert.strictEqual(streamReads, 1, 'handleEventStream invoked for retry_completion without query');
+
+		// 2. With query string
+		await fakeWindow.fetch(queryUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+		assert.strictEqual(postedMessages.filter(m => m.type === 'cc:generation_start').length, 2, 'cc:generation_start emitted for retry_completion with query');
+		assert.strictEqual(streamReads, 2, 'handleEventStream invoked for retry_completion with query');
+	});
+
+	// Test 62: (d) SSE content-type on any URL still handled
+	await test('0.6.7 Test 62: (d) SSE content-type on any URL still handled', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+
+		let streamReads = 0;
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'text/event-stream; charset=utf-8' : null)
+			},
+			clone() {
+				return {
+					status: 200,
+					ok: true,
+					headers: this.headers,
+					body: {
+						getReader() {
+							streamReads++;
+							return {
+								read: async () => ({ done: true, value: undefined })
+							};
+						}
+					}
+				};
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		// Non-completion URL with SSE content type
+		const nonCompletionUrl = 'https://claude.ai/api/organizations/11111111-1111-1111-1111-111111111111/custom_events';
+		await fakeWindow.fetch(nonCompletionUrl, { method: 'POST' });
+		await new Promise(r => setTimeout(r, 20));
+
+		// Generation start must NOT fire because URL is not completion
+		assert.strictEqual(postedMessages.filter(m => m.type === 'cc:generation_start').length, 0, 'cc:generation_start only fires for completion URLs');
+
+		// sse_stream_seen must fire with matchedBy = 'content-type'
+		const sseSeen = postedMessages.find(m => m.type === 'cc:diag' && m.payload?.category === 'sse_stream_seen');
+		assert.ok(sseSeen, 'sse_stream_seen must fire for SSE content-type');
+		assert.strictEqual(sseSeen.payload.data.matchedBy, 'content-type');
+
+		// handleEventStream must still be called
+		assert.strictEqual(streamReads, 1, 'handleEventStream must be called when matchedBy content-type');
+	});
+
+	// Test 63: (e) request_seen not emitted for assets-proxy or non-api paths, but emitted for /api/, /claudeai-rpc/, /edge-api/
+	await test('0.6.7 Test 63: (e) request_seen not emitted for assets-proxy or non-api paths', async () => {
+		const bridge = require('../src/injected/bridge.js');
+		const storage = createMockStorage();
+		global.localStorage = storage;
+		storage.setItem('cc_debug', 'true');
+
+		const { fakeWindow, postedMessages } = setupBridgeTestEnvironment();
+		fakeWindow.fetch = async () => ({
+			status: 200,
+			ok: true,
+			headers: {
+				get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null)
+			}
+		});
+		bridge.wrapFetch(fakeWindow);
+
+		// 1. assets-proxy asset URL -> skipped
+		await fakeWindow.fetch('https://assets-proxy.anthropic.com/claude-ai/v2/assets/completionGzipWorker-Q_JtDKxH.js');
+		// 2. assets-proxy api URL -> skipped
+		await fakeWindow.fetch('https://assets-proxy.anthropic.com/api/test');
+		// 3. claude.ai non-api URL -> skipped
+		await fakeWindow.fetch('https://claude.ai/chat/11111111-1111-1111-1111-111111111111');
+		await fakeWindow.fetch('https://claude.ai/favicon.ico');
+
+		const skippedLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen');
+		assert.strictEqual(skippedLogs.length, 0, 'No request_seen emitted for assets-proxy or non-api paths');
+
+		// 4. claude.ai /api/ path -> emitted
+		await fakeWindow.fetch('https://claude.ai/api/allowed_endpoint');
+		// 5. claude.ai /claudeai-rpc/ path -> emitted
+		await fakeWindow.fetch('https://claude.ai/claudeai-rpc/method');
+		// 6. claude.ai /edge-api/ path -> emitted
+		await fakeWindow.fetch('https://claude.ai/edge-api/user');
+
+		const emittedLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen');
+		assert.strictEqual(emittedLogs.length, 3, 'Must emit request_seen for /api/, /claudeai-rpc/, /edge-api/');
+
+		assert.strictEqual(emittedLogs[0].payload.data.pathShape, '/api/allowed_endpoint');
+		assert.strictEqual(emittedLogs[1].payload.data.pathShape, '/claudeai-rpc/method');
+		assert.strictEqual(emittedLogs[2].payload.data.pathShape, '/edge-api/user');
+
+		// Verify XHR filter:
+		class FakeXHRFilter {
+			constructor() {
+				this._listeners = {};
+				this.status = 200;
+			}
+			open(method, url) {
+				this.method = method;
+				this.url = url;
+			}
+			send() {
+				setTimeout(() => {
+					if (this._listeners['load']) this._listeners['load'].forEach(fn => fn());
+					if (this._listeners['loadend']) this._listeners['loadend'].forEach(fn => fn());
+				}, 5);
+			}
+			addEventListener(evt, fn) {
+				if (!this._listeners[evt]) this._listeners[evt] = [];
+				this._listeners[evt].push(fn);
+			}
+			getResponseHeader() {
+				return 'application/json';
+			}
+		}
+		fakeWindow.XMLHttpRequest = FakeXHRFilter;
+		global.XMLHttpRequest = FakeXHRFilter;
+		bridge.wrapXHR(fakeWindow);
+
+		// XHR to assets-proxy -> skipped
+		const xhr1 = new FakeXHRFilter();
+		xhr1.open('GET', 'https://assets-proxy.anthropic.com/api/test');
+		xhr1.send();
+
+		// XHR to /chat/123 -> skipped
+		const xhr2 = new FakeXHRFilter();
+		xhr2.open('GET', 'https://claude.ai/chat/123');
+		xhr2.send();
+
+		// XHR to /api/valid_xhr -> emitted
+		const xhr3 = new FakeXHRFilter();
+		xhr3.open('POST', 'https://claude.ai/api/valid_xhr');
+		xhr3.send();
+
+		await new Promise(r => setTimeout(r, 25));
+
+		const allXhrLogs = postedMessages.filter(m => m.type === 'cc:diag' && m.payload?.category === 'request_seen' && m.payload?.data?.pathShape?.includes('xhr'));
+		assert.strictEqual(allXhrLogs.length, 1, 'Only /api/ XHR must emit request_seen');
+		assert.strictEqual(allXhrLogs[0].payload.data.pathShape, '/api/valid_xhr');
+	});
+
 	console.log(`\nTests finished: ${passCount} passed, ${failCount} failed.`);
 	process.exit(failCount > 0 ? 1 : 0);
 })();

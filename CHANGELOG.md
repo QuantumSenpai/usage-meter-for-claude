@@ -2,6 +2,20 @@
 
 All notable changes to **Usage Meter for Claude** will be documented in this file.
 
+## [0.6.7] - 2026-10-18
+
+### Strict Completion URL Matching & Diagnostic Request Filtering
+- **Strict Completion Request Matching (`isCompletionRequestUrl`):**
+  - Replaced loose `.includes('/completion')` and `.includes('/retry_completion')` substring checks across `wrapFetch` and `wrapXHR` with a shared helper `isCompletionRequestUrl(url)`.
+  - Parses the URL and matches only when host is `claude.ai` and pathname matches `/^\/api\/organizations\/[^/]+\/chat_conversations\/[^/]+\/(completion|retry_completion)$/`.
+  - Fixes false-positive stream completion on page load caused by static asset script fetches matching `/completion` (e.g., `completionGzipWorker-Q_JtDKxH.js` hosted on `assets-proxy.anthropic.com`).
+  - Preserves legitimate completion and retry_completion endpoints with or without query parameters (e.g., `?tree=true`).
+  - Preserves general Server-Sent Events (SSE) content-type matching for arbitrary streaming endpoints.
+- **Diagnostic `request_seen` Filtering:**
+  - `request_seen` diagnostic telemetry now strictly ignores requests to `assets-proxy.anthropic.com` and any request whose pathname does not begin with `/api/`, `/claudeai-rpc/`, or `/edge-api/`.
+  - Eliminates debug ring buffer pollution from static scripts, icons, styles, and page navigations while preserving API request observation.
+  - Maintains all existing telemetry fields (`method`, `host`, `pathShape`, `status`, `content-type`, `contentType`, `inputType`, `input`) and 200-entry ring buffer capacity.
+
 ## [0.6.6] - 2026-10-18
 
 ### Context & Cache Rows Default Off and Request Diagnostics

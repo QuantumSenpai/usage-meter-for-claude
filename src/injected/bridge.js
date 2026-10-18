@@ -212,6 +212,68 @@
 		return typeof rawInput;
 	}
 
+	const COMPLETION_PATH_REGEX = /^\/api\/organizations\/[^/]+\/chat_conversations\/[^/]+\/(completion|retry_completion)$/;
+
+	function isCompletionRequestUrl(input) {
+		try {
+			let urlStr = '';
+			if (typeof input === 'string') {
+				urlStr = input.trim();
+			} else if (typeof URL !== 'undefined' && input instanceof URL) {
+				urlStr = input.href;
+			} else if ((typeof Request !== 'undefined' && input instanceof Request) || (input && typeof input === 'object' && typeof input.url === 'string')) {
+				urlStr = input.url;
+			}
+			if (!urlStr) return false;
+			if (urlStr.startsWith('blob:') || urlStr.startsWith('data:')) return false;
+
+			const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+				? window.location.origin
+				: 'https://claude.ai';
+			const parsed = new URL(urlStr, baseOrigin);
+			const host = (parsed.hostname || '').toLowerCase();
+			if (host !== 'claude.ai') return false;
+
+			return COMPLETION_PATH_REGEX.test(parsed.pathname || '');
+		} catch {
+			return false;
+		}
+	}
+
+	function shouldLogRequestSeen(rawUrl) {
+		try {
+			let urlStr = '';
+			if (typeof rawUrl === 'string') {
+				urlStr = rawUrl.trim();
+			} else if (typeof URL !== 'undefined' && rawUrl instanceof URL) {
+				urlStr = rawUrl.href;
+			} else if ((typeof Request !== 'undefined' && rawUrl instanceof Request) || (rawUrl && typeof rawUrl === 'object' && typeof rawUrl.url === 'string')) {
+				urlStr = rawUrl.url;
+			}
+			if (!urlStr) return false;
+			if (urlStr.startsWith('blob:') || urlStr.startsWith('data:')) return false;
+
+			const baseOrigin = (typeof window !== 'undefined' && window.location?.origin)
+				? window.location.origin
+				: 'https://claude.ai';
+			const parsed = new URL(urlStr, baseOrigin);
+
+			const host = (parsed.hostname || '').toLowerCase();
+			if (host === 'assets-proxy.anthropic.com') {
+				return false;
+			}
+
+			const pathname = parsed.pathname || '';
+			if (pathname.startsWith('/api/') || pathname.startsWith('/claudeai-rpc/') || pathname.startsWith('/edge-api/')) {
+				return true;
+			}
+
+			return false;
+		} catch {
+			return false;
+		}
+	}
+
 	// 2. Wrap Fetch
 	let originalFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
 
@@ -244,7 +306,7 @@
 			}
 
 			// Detect completion start
-			if (url && method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion'))) {
+			if (method === 'POST' && isCompletionRequestUrl(url)) {
 				post('cc:generation_start', { url });
 			}
 
@@ -254,16 +316,18 @@
 				response = await originalFetch(...args);
 			} catch (err) {
 				try {
-					postDiag('request_seen', {
-						method,
-						host: getHost(url || rawInput),
-						pathShape: computePathShape(url || rawInput),
-						status: 0,
-						'content-type': '',
-						contentType: '',
-						inputType,
-						input: inputType
-					});
+					if (shouldLogRequestSeen(url || rawInput)) {
+						postDiag('request_seen', {
+							method,
+							host: getHost(url || rawInput),
+							pathShape: computePathShape(url || rawInput),
+							status: 0,
+							'content-type': '',
+							contentType: '',
+							inputType,
+							input: inputType
+						});
+					}
 				} catch {
 					// ignore
 				}
@@ -272,19 +336,21 @@
 
 			// Diagnostic logging: request_seen
 			try {
-				const ct = (typeof response?.headers?.get === 'function'
-					? response.headers.get('content-type')
-					: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
-				postDiag('request_seen', {
-					method,
-					host: getHost(url || rawInput),
-					pathShape: computePathShape(url || rawInput),
-					status: (typeof response?.status === 'number') ? response.status : 0,
-					'content-type': ct,
-					contentType: ct,
-					inputType,
-					input: inputType
-				});
+				if (shouldLogRequestSeen(url || rawInput)) {
+					const ct = (typeof response?.headers?.get === 'function'
+						? response.headers.get('content-type')
+						: response?.headers?.['content-type'] || response?.headers?.['Content-Type']) || '';
+					postDiag('request_seen', {
+						method,
+						host: getHost(url || rawInput),
+						pathShape: computePathShape(url || rawInput),
+						status: (typeof response?.status === 'number') ? response.status : 0,
+						'content-type': ct,
+						contentType: ct,
+						inputType,
+						input: inputType
+					});
+				}
 			} catch {
 				// ignore
 			}
@@ -293,7 +359,7 @@
 			try {
 				let matchedBy = null;
 				const isSse = isSseResponse(response);
-				const isCompletionUrl = Boolean(url && (url.includes('/completion') || url.includes('/retry_completion')));
+				const isCompletionUrl = isCompletionRequestUrl(url);
 
 				if (isCompletionUrl) {
 					matchedBy = 'url';
@@ -408,18 +474,20 @@
 				if (this.__cc_seen_logged) return;
 				this.__cc_seen_logged = true;
 				try {
+					const rawInput = this.__cc_raw_input;
+					const targetUrl = this.__cc_url || rawInput;
+					if (!shouldLogRequestSeen(targetUrl)) return;
 					let ct = '';
 					try {
 						ct = (typeof this.getResponseHeader === 'function' ? this.getResponseHeader('content-type') : '') || '';
 					} catch {
 						// ignore
 					}
-					const rawInput = this.__cc_raw_input;
 					const inputType = getRequestInputType(rawInput);
 					postDiag('request_seen', {
 						method: this.__cc_method || 'GET',
-						host: getHost(this.__cc_url || rawInput),
-						pathShape: computePathShape(this.__cc_url || rawInput),
+						host: getHost(targetUrl),
+						pathShape: computePathShape(targetUrl),
 						status: (typeof this.status === 'number') ? this.status : 0,
 						'content-type': ct,
 						contentType: ct,
@@ -442,7 +510,7 @@
 				const detectedOrg = getOrgMeta(this.__cc_url);
 				if (detectedOrg) post('cc:detected_org', { orgId: detectedOrg });
 
-				if (this.__cc_method === 'POST' && (this.__cc_url.includes('/completion') || this.__cc_url.includes('/retry_completion'))) {
+				if (this.__cc_method === 'POST' && isCompletionRequestUrl(this.__cc_url)) {
 					post('cc:generation_start', { url: this.__cc_url });
 				}
 
@@ -683,7 +751,9 @@
 			wrapFetch,
 			wrapXHR,
 			toAbsoluteUrl,
-			getRequestInputType
+			getRequestInputType,
+			isCompletionRequestUrl,
+			shouldLogRequestSeen
 		};
 	}
 })();
